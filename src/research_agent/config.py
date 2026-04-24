@@ -1,0 +1,57 @@
+"""全局配置与常量。"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# === LLM 配置（OpenAI 兼容 Chat Completions API）===
+LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-4o")
+LLM_TIMEOUT: float = float(os.getenv("LLM_TIMEOUT", "120"))
+LLM_MAX_RETRIES: int = int(os.getenv("LLM_MAX_RETRIES", "3"))
+LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+
+# 向后兼容别名
+DEFAULT_MODEL: str = LLM_MODEL
+
+# === Web Search 配置（可选）===
+SEARCH_API_PROVIDER: str = os.getenv("SEARCH_API_PROVIDER", "duckduckgo")
+SEARCH_API_KEY: str = os.getenv("SEARCH_API_KEY", "")
+
+# === Agent1 对话轮次上限 ===
+STRATEGIST_MAX_ROUNDS: int = int(os.getenv("STRATEGIST_MAX_ROUNDS", "5"))
+
+# === 路径 ===
+PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
+PROJECTS_DIR: Path = PROJECT_ROOT / "projects"
+
+# === 产物文件名（每阶段固定） ===
+FILE_OUTLINE = "01_outline.md"
+FILE_SOURCES_DRAFT = "02_sources_draft.md"
+FILE_SOURCES_FINAL = "02_sources_final.md"
+FILE_RAW_DATA_DIR = "03_raw_data"
+FILE_VALIDATION = "03_validation_report.md"
+FILE_ANALYSIS = "04_analysis.md"
+FILE_FINAL_REPORT = "05_final_report.md"
+FILE_STATE = "state.json"
+
+# 循环中间产物命名（占位 {n}）
+FILE_RAW_ROUND = "round_{n}.md"
+FILE_FEEDBACK_ROUND = "feedback_round_{n}.json"
+
+# === 循环上限 ===
+MAX_COLLECT_ROUNDS: int = int(os.getenv("MAX_COLLECT_ROUNDS", "3"))
+
+# === 检查点文件（用户确认后由 CLI 写入） ===
+APPROVAL_MARK = ".approved"
+
+
+def project_dir_for(topic: str, date_str: str) -> Path:
+    """生成项目目录名：topic_YYYYMMDD。topic 中的路径分隔符被替换掉。"""
+    safe_topic = topic.strip().replace("/", "_").replace("\\", "_")
+    return PROJECTS_DIR / f"{safe_topic}_{date_str}"
