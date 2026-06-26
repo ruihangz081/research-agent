@@ -83,6 +83,8 @@ async def generate_latex_from_markdown(
 - 使用 geometry、xcolor、booktabs、longtable、tabularx、array、hyperref、fancyhdr、titlesec、enumitem、tikz、pgfplots。
 - 可根据报告中的关键数字主动绘制 2-4 个图：例如股价区间、收入结构、情景预测、风险矩阵。优先用 tikz 或 pgfplots，不要引用外部图片。
 - 表格要用 booktabs/longtable/tabularx 重新排版，不要保留 Markdown 竖线表格。
+- 文字密集矩阵、SWOT、风险清单、机会/风险对照表、超过 4 行或每格超过 20 个中文字符的内容，必须使用 tabularx 或 longtable，不要用 TikZ 固定坐标画成图。
+- 只把数字型图表、时间线、流程图、少量节点关系图交给 tikz/pgfplots；TikZ 节点必须设置 text width 和足够间距，避免重叠。
 - 首页要有标题、主题、生成日期、摘要信息块。
 - 正文要有清晰章节层级、页眉页脚、页码、目录。
 - 所有 \\begin{{...}} 和 \\end{{...}} 必须严格配对，尤其 titlepage、center、minipage、tikzpicture、axis、longtable、tabularx。
