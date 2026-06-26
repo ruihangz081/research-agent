@@ -24,8 +24,8 @@ async def web_search(query: str, num_results: int = 5) -> str:
     # 尝试用 duckduckgo-search 库（可选依赖）
     try:
         return await _search_duckduckgo(query, num_results)
-    except ImportError:
-        pass
+    except Exception as e:
+        logger.warning("duckduckgo-search failed: %s", e)
 
     # 兜底：用 DuckDuckGo HTML API（无需额外依赖）
     try:
@@ -38,7 +38,10 @@ async def web_search(query: str, num_results: int = 5) -> str:
 
 async def _search_duckduckgo(query: str, num_results: int) -> str:
     """使用 duckduckgo-search 库搜索。"""
-    from duckduckgo_search import DDGS
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        from duckduckgo_search import DDGS
 
     results = []
     with DDGS() as ddgs:

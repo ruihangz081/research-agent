@@ -62,6 +62,8 @@ class ProjectState(BaseModel):
     # Agent4/5 产出
     analysis_path: str | None = None
     final_report_path: str | None = None
+    final_report_tex_path: str | None = None
+    final_report_typeset_pdf_path: str | None = None
 
     # 附加元数据
     notes: dict[str, Any] = Field(default_factory=dict)

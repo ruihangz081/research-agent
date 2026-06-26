@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Research Agent</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">RA</div>
+          <div>
+            <h1>Research Agent</h1>
+            <p id="configLine">模型连接中</p>
+          </div>
+        </div>
+
+        <form id="createForm" class="new-project">
+          <label>
+            <span>调研主题</span>
+            <input id="topicInput" name="topic" placeholder="例如：新能源汽车行业" required />
+          </label>
+          <label>
+            <span>补充要求</span>
+            <textarea
+              id="briefInput"
+              name="brief"
+              rows="5"
+              placeholder="目标、范围、输出偏好、重点问题"
+            ></textarea>
+          </label>
+          <label>
+            <span>采集验证轮次</span>
+            <input id="roundInput" name="rounds" type="number" min="1" max="5" value="3" />
+          </label>
+          <button class="primary" type="submit">新建调研</button>
+        </form>
+
+        <div class="section-head">
+          <span>项目</span>
+          <button id="refreshBtn" class="icon-button" type="button" title="刷新">↻</button>
+        </div>
+        <nav id="projectList" class="project-list"></nav>
+      </aside>
+
+      <main class="workspace">
+        <section class="status-panel">
+          <div>
+            <p class="eyebrow">当前项目</p>
+            <h2 id="projectTitle">选择或新建一个调研</h2>
+          </div>
+          <div class="status-cluster">
+            <span id="stageBadge" class="badge">未选择</span>
+            <button id="continueBtn" class="secondary" type="button" disabled>继续运行</button>
+          </div>
+        </section>
+
+        <section id="checkpointPanel" class="checkpoint hidden">
+          <div class="checkpoint-main">
+            <p class="eyebrow">检查点</p>
+            <h3 id="checkpointTitle">等待审批</h3>
+            <textarea id="feedbackInput" rows="4" placeholder="驳回时填写修改意见"></textarea>
+          </div>
+          <div class="checkpoint-actions">
+            <button id="approveBtn" class="primary" type="button">通过</button>
+            <button id="rejectBtn" class="danger" type="button">驳回</button>
+          </div>
+        </section>
+
+        <section class="progress-panel">
+          <div class="meter-row">
+            <span>采集验证</span>
+            <span id="roundText">0 / 0</span>
+          </div>
+          <div class="meter"><div id="roundMeter"></div></div>
+          <div id="logList" class="logs"></div>
+        </section>
+      </main>
+
+      <aside class="inspector">
+        <div class="inspector-toolbar">
+          <span>产物预览</span>
+          <div class="toolbar-actions">
+            <button id="downloadPdfBtn" class="secondary small" type="button" disabled>普通 PDF</button>
+            <button id="typesetBtn" class="primary small" type="button" disabled>LaTeX 排版</button>
+            <button id="downloadTexBtn" class="secondary small" type="button" disabled>下载 TeX</button>
+            <button id="downloadTypesetPdfBtn" class="secondary small" type="button" disabled>高级 PDF</button>
+          </div>
+        </div>
+        <div class="tabs" id="artifactTabs"></div>
+        <article id="artifactView" class="artifact-view">
+          <div class="empty-state">暂无产物</div>
+        </article>
+      </aside>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

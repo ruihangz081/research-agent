@@ -17,10 +17,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-search = ["duckduckgo-search>=6.0"]
+search = ["ddgs>=9.14", "duckduckgo-search>=6.0"]
+web = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "reportlab>=4.0"]
 
 [project.scripts]
 research-agent = "research_agent.__main__:main"
+research-agent-web = "research_agent.web_app:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -13,6 +13,7 @@ from rich.console import Console
 from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
+from ..report_layout import generate_typeset_artifacts
 from ..tools import default_registry
 
 if TYPE_CHECKING:
@@ -107,4 +108,29 @@ async def run_formatting(state: "ProjectState") -> Path:
         raise RuntimeError(f"Agent5 未能生成最终报告：{final_report_path}")
 
     console.print(f"\n[green]✓ 最终报告已生成：{final_report_path.name}[/green]")
+
+    try:
+        console.print("[cyan]正在生成 LaTeX 排版交付物...[/cyan]")
+        artifacts = await generate_typeset_artifacts(
+            topic=state.topic,
+            project_dir=state.project_dir,
+            final_report_path=final_report_path,
+        )
+        state.final_report_tex_path = str(artifacts["tex_path"])
+        if artifacts["pdf_path"]:
+            state.final_report_typeset_pdf_path = str(artifacts["pdf_path"])
+            console.print(
+                f"[green]✓ LaTeX 高级 PDF 已生成：{artifacts['pdf_path'].name}[/green]"
+            )
+        else:
+            console.print(
+                "[yellow]已生成 LaTeX 源文件；本机未检测到 xelatex/lualatex，"
+                "暂未自动编译 PDF。[/yellow]"
+            )
+        state.save()
+    except Exception as e:
+        state.notes["latex_typeset_error"] = str(e)
+        state.save()
+        console.print(f"[yellow]LaTeX 排版交付物生成失败：{e}[/yellow]")
+
     return final_report_path
