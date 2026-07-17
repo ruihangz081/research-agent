@@ -25,12 +25,15 @@ from .report_layout import (
 )
 from .state import ProjectState, Stage
 from .tools import default_registry
+from .sources.api import build_runtime, create_sources_router
 
 STATIC_DIR = Path(__file__).parent / "web_static"
 ARTIFACT_LIMIT = 120_000
 FINAL_REPORT_PDF = "05_final_report.pdf"
 
 app = FastAPI(title="Research Agent Web")
+_source_service, _source_queue = build_runtime(config.SOURCE_DATA_DIR)
+app.include_router(create_sources_router(_source_service, _source_queue))
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

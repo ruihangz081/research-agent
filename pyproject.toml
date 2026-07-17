@@ -22,6 +22,7 @@ dependencies = [
     "striprtf>=0.0.29",
     "PyMuPDF>=1.24",
     "pytesseract>=0.3.13",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]

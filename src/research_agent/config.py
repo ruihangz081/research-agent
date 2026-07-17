@@ -29,6 +29,7 @@ STRATEGIST_MAX_ROUNDS: int = int(os.getenv("STRATEGIST_MAX_ROUNDS", "5"))
 # === 路径 ===
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 PROJECTS_DIR: Path = PROJECT_ROOT / "projects"
+SOURCE_DATA_DIR: Path = Path(os.getenv("SOURCE_DATA_DIR", str(PROJECT_ROOT / ".data" / "sources")))
 
 # === 产物文件名（每阶段固定） ===
 FILE_OUTLINE = "01_outline.md"

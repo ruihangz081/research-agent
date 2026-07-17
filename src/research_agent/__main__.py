@@ -24,6 +24,7 @@ from rich.console import Console
 from . import config, orchestrator
 from .orchestrator import PipelineError
 from .state import ProjectState
+from .sources.cli import configure_parser as configure_source_parser
 
 console = Console()
 
@@ -102,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="通用行业调研 Multi-Agent（基于 Claude Agent SDK）",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
+    configure_source_parser(sub)
 
     p_new = sub.add_parser("new", help="启动一次新调研")
     p_new.add_argument("topic", type=str, help="调研主题，例如 '新能源汽车行业'")
