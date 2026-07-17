@@ -72,8 +72,15 @@ class SourceService:
             raise SourceSecurityError("empty uploads are not allowed")
         if len(data) > self.max_upload_bytes:
             raise SourceSecurityError("upload exceeds configured size limit")
-        if Path(filename).suffix.lower() == ".zip":
+        suffix = Path(filename).suffix.lower()
+        if data.startswith(b"PK\\x03\\x04"):
+            if suffix not in {".zip", ".docx", ".xlsx", ".pptx"}:
+                raise SourceSecurityError("zip container extension does not match content")
             inspect_zip(data)
+        if data.startswith(b"%PDF-") and suffix != ".pdf":
+            raise SourceSecurityError("PDF signature does not match extension")
+        if (data.startswith(b"\\x89PNG") or data.startswith(b"\\xff\\xd8\\xff")) and suffix not in {".png", ".jpg", ".jpeg"}:
+            raise SourceSecurityError("image signature does not match extension")
         digest = sha256_bytes(data)
         existing = self.repository.get_by_sha256(project_id, digest)
         if existing:

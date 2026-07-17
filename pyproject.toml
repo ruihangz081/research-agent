@@ -32,6 +32,7 @@ web = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "reportlab>=4.0"]
 [project.scripts]
 research-agent = "research_agent.__main__:main"
 research-agent-web = "research_agent.web_app:main"
+research-agent-source-worker = "research_agent.sources.jobs:main"
 
 [build-system]
 requires = ["hatchling"]

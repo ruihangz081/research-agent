@@ -40,6 +40,7 @@ class SQLiteRepository:
         self._connection = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(_SCHEMA)
+        self._connection.execute("PRAGMA user_version = 1")
         self._connection.commit()
 
     def close(self) -> None:

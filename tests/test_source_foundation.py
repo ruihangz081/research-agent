@@ -59,6 +59,13 @@ def test_filename_traversal_is_rejected(name: str) -> None:
         safe_filename(name)
 
 
+def test_container_signature_and_extension_must_match(service: SourceService) -> None:
+    with pytest.raises(SourceSecurityError, match="signature"):
+        service.register_bytes("project", "fake.txt", b"%PDF-1.7 fake")
+    with pytest.raises(SourceSecurityError, match="container"):
+        service.register_bytes("project", "fake.txt", b"PK\\x03\\x04fake")
+
+
 def test_zip_traversal_and_bomb_are_rejected() -> None:
     traversal = io.BytesIO()
     with zipfile.ZipFile(traversal, "w") as archive:
