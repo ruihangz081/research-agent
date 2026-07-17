@@ -15,6 +15,7 @@ from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
 from ..tools import default_registry
+from .source_context import source_context
 
 if TYPE_CHECKING:
     from ..state import ProjectState
@@ -73,6 +74,7 @@ async def run_source_tiering(
     sources_draft_path = state.project_dir / config.FILE_SOURCES_DRAFT
 
     system_prompt = _load_tiering_prompt()
+    system_prompt += source_context(state)
     system_prompt = system_prompt.replace("{outline_path}", str(outline_path))
     system_prompt = system_prompt.replace("{sources_draft_path}", str(sources_draft_path))
     system_prompt += (
@@ -91,7 +93,7 @@ async def run_source_tiering(
     options = AgentOptions(
         system_prompt=system_prompt,
         model=config.LLM_MODEL,
-        allowed_tools=["Read", "Write", "WebSearch"],
+        allowed_tools=["Read", "Write", "WebSearch", "ListProjectSources", "SearchProjectSources", "ReadProjectSource"],
         cwd=str(state.project_dir),
         max_turns=25,
     )
@@ -174,7 +176,7 @@ async def run_collection_round(
     options = AgentOptions(
         system_prompt=system_prompt,
         model=config.LLM_MODEL,
-        allowed_tools=["Read", "Write", "WebSearch", "WebFetch"],
+        allowed_tools=["Read", "Write", "WebSearch", "WebFetch", "ListProjectSources", "SearchProjectSources", "ReadProjectSource"],
         cwd=str(state.project_dir),
         max_turns=40,
     )

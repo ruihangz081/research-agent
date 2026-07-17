@@ -14,6 +14,7 @@ from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
 from ..tools import default_registry
+from .source_context import source_context
 
 if TYPE_CHECKING:
     from ..state import ProjectState
@@ -48,6 +49,7 @@ async def run_analysis(state: "ProjectState") -> Path:
     raw_rounds_str = "\n".join(f"  - {p}" for p in raw_rounds) or "  （无）"
 
     system_prompt = _load_analyst_prompt()
+    system_prompt += source_context(state)
     replacements = {
         "{outline_path}": str(outline_path),
         "{sources_final_path}": str(sources_final_path),
@@ -72,7 +74,7 @@ async def run_analysis(state: "ProjectState") -> Path:
     options = AgentOptions(
         system_prompt=system_prompt,
         model=config.LLM_MODEL,
-        allowed_tools=["Read", "Write", "WebSearch", "WebFetch"],
+        allowed_tools=["Read", "Write", "WebSearch", "WebFetch", "ListProjectSources", "SearchProjectSources", "ReadProjectSource", "InspectSourceEvidence"],
         cwd=str(state.project_dir),
         max_turns=50,
     )

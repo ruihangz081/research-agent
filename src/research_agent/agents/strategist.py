@@ -15,6 +15,7 @@ from .. import config
 from ..agent_loop import AgentOptions, AgentSession
 from ..llm import LLMClient
 from ..tools import default_registry
+from .source_context import source_context
 
 if TYPE_CHECKING:
     from ..state import ProjectState
@@ -35,6 +36,7 @@ async def run_strategist(state: "ProjectState", feedback: str | None = None) -> 
     project_dir.mkdir(parents=True, exist_ok=True)
 
     system_prompt = _load_system_prompt()
+    system_prompt += source_context(state)
     system_prompt += (
         f"\n\n## 当前调研项目参数\n"
         f"- 调研主题：**{state.topic}**\n"
@@ -51,7 +53,7 @@ async def run_strategist(state: "ProjectState", feedback: str | None = None) -> 
     options = AgentOptions(
         system_prompt=system_prompt,
         model=config.LLM_MODEL,
-        allowed_tools=["Read", "Write"],
+        allowed_tools=["Read", "Write", "ListProjectSources", "SearchProjectSources"],
         cwd=str(project_dir),
         max_turns=40,
     )

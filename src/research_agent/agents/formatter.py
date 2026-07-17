@@ -15,6 +15,7 @@ from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
 from ..report_layout import generate_typeset_artifacts
 from ..tools import default_registry
+from .source_context import source_context
 
 if TYPE_CHECKING:
     from ..state import ProjectState
@@ -48,6 +49,7 @@ async def run_formatting(state: "ProjectState") -> Path:
     final_report_path = state.project_dir / config.FILE_FINAL_REPORT
 
     system_prompt = _load_formatter_prompt()
+    system_prompt += source_context(state)
     replacements = {
         "{outline_path}": str(outline_path),
         "{analysis_path}": str(analysis_path),
@@ -71,7 +73,7 @@ async def run_formatting(state: "ProjectState") -> Path:
     options = AgentOptions(
         system_prompt=system_prompt,
         model=config.LLM_MODEL,
-        allowed_tools=["Read", "Write", "WebSearch"],
+        allowed_tools=["Read", "Write", "ReadProjectSource", "InspectSourceEvidence"],
         cwd=str(state.project_dir),
         max_turns=40,
     )

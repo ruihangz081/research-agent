@@ -15,6 +15,7 @@ from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
 from ..tools import default_registry
+from .source_context import source_context
 
 if TYPE_CHECKING:
     from ..state import ProjectState
@@ -103,6 +104,7 @@ async def run_validation(
     )
 
     system_prompt = _load_validator_prompt()
+    system_prompt += source_context(state)
     replacements = {
         "{outline_path}": str(Path(state.outline_path)),
         "{sources_list_path}": str(sources_list_path),
@@ -129,7 +131,7 @@ async def run_validation(
     options = AgentOptions(
         system_prompt=system_prompt,
         model=config.LLM_MODEL,
-        allowed_tools=["Read", "Write"],
+        allowed_tools=["Read", "Write", "ReadProjectSource", "InspectSourceEvidence"],
         cwd=str(state.project_dir),
         max_turns=30,
     )
