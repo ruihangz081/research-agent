@@ -20,6 +20,8 @@ dependencies = [
     "python-pptx>=1.0",
     "Pillow>=10.0",
     "striprtf>=0.0.29",
+    "PyMuPDF>=1.24",
+    "pytesseract>=0.3.13",
 ]
 
 [project.optional-dependencies]

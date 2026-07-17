@@ -203,7 +203,7 @@ def parse_image(source_id: str, data: bytes, filename: str) -> SourceDocument:
         width, height = image.size
     except Exception as exc:
         raise ParseError(f"invalid image: {exc}") from exc
-    image_block = ImageBlock(image_id=f"img_{source_id}_1", source_id=source_id, bbox=(0, 0, float(width), float(height)))
+    image_block = ImageBlock(image_id=f"img_{source_id}_1", source_id=source_id, page_number=1, bbox=(0, 0, float(width), float(height)))
     warning = ExtractionWarning(code="ocr_pending", message="image text requires OCR worker", severity="warning", method="ocr")
     return _document(source_id, [], images=[image_block], warnings=[warning])
 

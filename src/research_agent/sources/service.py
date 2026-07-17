@@ -135,6 +135,31 @@ class SourceService:
         })
         return document
 
+    def run_ocr(self, project_id: str, source_id: str, engine=None, actor: str = "worker"):
+        from .ocr import TesseractEngine, ocr_document, render_pdf_pages
+        source = self.get_source(project_id, source_id)
+        document = self.repository.get_document(source_id, project_id)
+        if document is None:
+            document = self.parse_source(project_id, source_id, actor)
+        if engine is None:
+            engine = TesseractEngine()
+        if source.original_filename.lower().endswith(".pdf"):
+            page_numbers = [page.page_number for page in document.pages if page.is_scanned]
+            image_pages = render_pdf_pages(self.raw_bytes(project_id, source_id), page_numbers)
+        else:
+            import io
+            from PIL import Image
+            image = Image.open(io.BytesIO(self.raw_bytes(project_id, source_id)))
+            image_pages = {1: image.copy()}
+        image_pages = {page: image for page, image in image_pages.items() if image is not None}
+        document = ocr_document(document, image_pages, engine)
+        self.repository.put_document(document)
+        source.status = SourceStatus.NEEDS_REVIEW if any(w.severity in {"high", "error"} for w in document.warnings) else SourceStatus.READY
+        source.updated_at = utcnow()
+        self.repository.update_source(source)
+        self._audit(project_id, source_id, actor, "source.ocr_completed", {"pages": document.quality.ocr_pages})
+        return document
+
     def get_source(self, project_id: str, source_id: str) -> SourceAsset:
         source = self.repository.get_source(source_id, project_id)
         if source is None:
