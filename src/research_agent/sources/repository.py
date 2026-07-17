@@ -26,7 +26,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(chunk_id UNINDEXED, source_id UNINDEXED, text);
 CREATE TABLE IF NOT EXISTS evidence (evidence_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_id TEXT NOT NULL, payload TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_evidence_project ON evidence(project_id, source_id);
-CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, status TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_jobs_queue ON jobs(status, updated_at);
 CREATE TABLE IF NOT EXISTS audit (event_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_id TEXT, action TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL);
 """
@@ -138,16 +138,62 @@ class SQLiteRepository:
     def put_job(self, job: Job) -> bool:
         with self._lock, self._connection:
             try:
-                self._connection.execute("INSERT INTO jobs VALUES (?, ?, ?, ?, ?)",
-                                         (job.job_id, job.project_id, job.status.value, job.model_dump_json(), job.created_at.isoformat()))
+                self._connection.execute("INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?)",
+                                         (job.job_id, job.project_id, job.status.value, job.idempotency_key,
+                                          job.model_dump_json(), job.created_at.isoformat()))
                 return True
             except sqlite3.IntegrityError:
                 return False
+
+    def get_job_by_idempotency(self, idempotency_key: str, project_id: str | None = None) -> Job | None:
+        query = "SELECT payload FROM jobs WHERE idempotency_key=?"
+        args: list[object] = [idempotency_key]
+        if project_id:
+            query += " AND project_id=?"
+            args.append(project_id)
+        row = self._connection.execute(query, args).fetchone()
+        return Job.model_validate_json(row[0]) if row else None
 
     def update_job(self, job: Job) -> None:
         with self._lock, self._connection:
             self._connection.execute("UPDATE jobs SET status=?, payload=?, updated_at=? WHERE job_id=?",
                                      (job.status.value, job.model_dump_json(), datetime.now(timezone.utc).isoformat(), job.job_id))
+
+    def claim_next_job(self, worker_id: str) -> Job | None:
+        """Atomically move one queued job to running, safe across processes."""
+        with self._lock:
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._connection.execute("SELECT payload FROM jobs WHERE status=? ORDER BY updated_at LIMIT 1", (JobStatus.QUEUED.value,)).fetchone()
+                if not row:
+                    self._connection.commit()
+                    return None
+                job = Job.model_validate_json(row[0])
+                now = datetime.now(timezone.utc)
+                job.status = JobStatus.RUNNING
+                job.worker_id = worker_id
+                job.attempts += 1
+                job.started_at = job.started_at or now
+                job.heartbeat_at = now
+                self._connection.execute("UPDATE jobs SET status=?, payload=?, updated_at=? WHERE job_id=?",
+                                         (job.status.value, job.model_dump_json(), now.isoformat(), job.job_id))
+                self._connection.commit()
+                return job
+            except Exception:
+                self._connection.rollback()
+                raise
+
+    def recover_stale_jobs(self, timeout_seconds: int = 900) -> list[Job]:
+        cutoff = datetime.now(timezone.utc).timestamp() - timeout_seconds
+        recovered: list[Job] = []
+        for row in self._connection.execute("SELECT payload FROM jobs WHERE status=?", (JobStatus.RUNNING.value,)):
+            job = Job.model_validate_json(row[0])
+            if job.heartbeat_at and job.heartbeat_at.timestamp() < cutoff:
+                job.status = JobStatus.QUEUED if job.attempts < job.max_attempts else JobStatus.FAILED
+                job.error = "worker heartbeat expired"
+                self.update_job(job)
+                recovered.append(job)
+        return recovered
 
     def get_job(self, job_id: str, project_id: str | None = None) -> Job | None:
         query = "SELECT payload FROM jobs WHERE job_id=?"
