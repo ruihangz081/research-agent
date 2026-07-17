@@ -1,0 +1,546 @@
+:root {
+  color-scheme: light;
+  --bg: #f6f7f4;
+  --panel: #ffffff;
+  --panel-alt: #f2f6f4;
+  --ink: #17201b;
+  --muted: #68756f;
+  --line: #dce3de;
+  --teal: #0f766e;
+  --teal-dark: #0b5d57;
+  --amber: #b7791f;
+  --red: #b42318;
+  --blue: #255f99;
+  --shadow: 0 16px 40px rgba(28, 43, 36, 0.09);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  letter-spacing: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 0;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: minmax(260px, 330px) minmax(420px, 1fr) minmax(360px, 44vw);
+  height: 100vh;
+  min-height: 0;
+}
+
+.sidebar,
+.workspace,
+.inspector {
+  min-width: 0;
+  min-height: 0;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  overflow: hidden;
+  border-right: 1px solid var(--line);
+  background: #fbfcfa;
+  padding: 22px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--ink);
+  color: white;
+  font-weight: 800;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.brand p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.new-project {
+  display: grid;
+  gap: 12px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+label {
+  display: grid;
+  gap: 6px;
+}
+
+label span,
+.section-head,
+.eyebrow,
+.meter-row {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+input,
+textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  outline: none;
+  padding: 10px 11px;
+}
+
+textarea {
+  resize: vertical;
+}
+
+input:focus,
+textarea:focus {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+}
+
+.primary,
+.secondary,
+.danger {
+  min-height: 40px;
+  border-radius: 8px;
+  padding: 0 14px;
+  font-weight: 750;
+}
+
+.primary {
+  background: var(--teal);
+  color: white;
+}
+
+.primary:hover {
+  background: var(--teal-dark);
+}
+
+.secondary {
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--ink);
+}
+
+.secondary:hover {
+  border-color: #b9c6bf;
+}
+
+.danger {
+  background: #fff1ee;
+  color: var(--red);
+}
+
+.danger:hover {
+  background: #ffe3dd;
+}
+
+.small {
+  min-height: 34px;
+  padding: 0 11px;
+  font-size: 13px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.icon-button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+}
+
+.project-list {
+  display: grid;
+  gap: 8px;
+  overflow: auto;
+  min-height: 0;
+}
+
+.project-item {
+  display: grid;
+  gap: 5px;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  padding: 10px;
+  text-align: left;
+}
+
+.project-item:hover,
+.project-item.active {
+  border-color: var(--line);
+  background: white;
+}
+
+.project-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.project-meta {
+  display: flex;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workspace {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  overflow: auto;
+  padding: 24px;
+}
+
+.status-panel,
+.checkpoint,
+.progress-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.status-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 96px;
+  padding: 20px;
+}
+
+.eyebrow {
+  margin: 0 0 7px;
+}
+
+h2,
+h3 {
+  margin: 0;
+}
+
+h2 {
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+h3 {
+  font-size: 18px;
+}
+
+.status-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  border-radius: 8px;
+  background: var(--panel-alt);
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 800;
+  padding: 0 12px;
+}
+
+.checkpoint {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  padding: 18px;
+}
+
+.checkpoint.hidden {
+  display: none;
+}
+
+.checkpoint-main {
+  display: grid;
+  gap: 10px;
+}
+
+.checkpoint-actions {
+  display: grid;
+  align-content: end;
+  gap: 10px;
+  width: 110px;
+}
+
+.progress-panel {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.meter-row {
+  display: flex;
+  justify-content: space-between;
+}
+
+.meter {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: #e7ece8;
+}
+
+.meter div {
+  width: 0%;
+  height: 100%;
+  background: linear-gradient(90deg, var(--teal), var(--amber));
+  transition: width 180ms ease;
+}
+
+.logs {
+  display: grid;
+  max-height: 48vh;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid #eef2ef;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.log-row span:last-child {
+  color: var(--ink);
+}
+
+.inspector {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.inspector-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.inspector-toolbar span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  padding: 14px;
+}
+
+.tab {
+  flex: 0 0 auto;
+  min-height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: white;
+  color: var(--muted);
+  padding: 0 11px;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.tab.active {
+  border-color: var(--teal);
+  background: #eaf6f2;
+  color: var(--teal-dark);
+}
+
+.tab.missing {
+  opacity: 0.48;
+}
+
+.artifact-view {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+}
+
+.empty-state {
+  display: grid;
+  min-height: 240px;
+  place-items: center;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.markdown {
+  max-width: 900px;
+  line-height: 1.72;
+  font-size: 15px;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  margin: 22px 0 10px;
+  line-height: 1.25;
+}
+
+.markdown h1 {
+  font-size: 26px;
+}
+
+.markdown h2 {
+  font-size: 21px;
+}
+
+.markdown h3 {
+  font-size: 17px;
+}
+
+.markdown p {
+  margin: 10px 0;
+}
+
+.markdown ul {
+  padding-left: 22px;
+}
+
+.markdown code {
+  border-radius: 5px;
+  background: #eef2ef;
+  padding: 2px 5px;
+}
+
+.markdown pre {
+  overflow: auto;
+  border-radius: 8px;
+  background: #18211d;
+  color: white;
+  padding: 14px;
+}
+
+@media (max-width: 1100px) {
+  .app-shell {
+    grid-template-columns: 300px minmax(0, 1fr);
+  }
+
+  .inspector {
+    grid-column: 1 / -1;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    min-height: 52vh;
+  }
+}
+
+@media (max-width: 760px) {
+  body {
+    overflow: auto;
+  }
+
+  .app-shell {
+    display: block;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .sidebar,
+  .workspace,
+  .inspector {
+    border: 0;
+    overflow: visible;
+    padding: 16px;
+  }
+
+  .status-panel,
+  .checkpoint {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .checkpoint-actions {
+    grid-template-columns: 1fr 1fr;
+    width: auto;
+  }
+}
