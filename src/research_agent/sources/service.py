@@ -110,6 +110,31 @@ class SourceService:
         })
         return SourceIngestResult(source=source)
 
+    def parse_source(self, project_id: str, source_id: str, actor: str = "worker"):
+        """Parse the immutable object and persist only a derived document layer."""
+        from .parsers import ParseError, parse_bytes
+        source = self.get_source(project_id, source_id)
+        source.status = SourceStatus.PARSING
+        source.updated_at = utcnow()
+        self.repository.update_source(source)
+        try:
+            document = parse_bytes(source.source_id, self.object_store.get(source.sha256), source.original_filename).document
+        except ParseError as exc:
+            source.status = SourceStatus.FAILED
+            source.updated_at = utcnow()
+            self.repository.update_source(source)
+            self._audit(project_id, source_id, actor, "source.parse_failed", {"error": str(exc)})
+            raise
+        self.repository.put_document(document)
+        source.status = SourceStatus.NEEDS_REVIEW if any(w.severity in {"high", "error"} for w in document.warnings) else SourceStatus.READY
+        source.parser_version = "registry-1"
+        source.updated_at = utcnow()
+        self.repository.update_source(source)
+        self._audit(project_id, source_id, actor, "source.parsed", {
+            "blocks": len(document.blocks), "tables": len(document.tables), "warnings": len(document.warnings),
+        })
+        return document
+
     def get_source(self, project_id: str, source_id: str) -> SourceAsset:
         source = self.repository.get_source(source_id, project_id)
         if source is None:

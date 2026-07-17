@@ -1,0 +1,15 @@
+{
+  "txt": {"text": "Revenue reached 42 million", "locator": "offset"},
+  "md": {"text": "Market Overview", "locator": "offset"},
+  "html": {"text": "Verified web evidence", "title": "Golden HTML"},
+  "mhtml": {"text": "Archived web evidence"},
+  "csv": {"text": "Revenue", "cell": "B2"},
+  "tsv": {"text": "利润", "cell": "B2"},
+  "pdf": {"text": "Golden PDF evidence", "page": 1},
+  "docx": {"text": "DOCX evidence paragraph", "paragraph": 0},
+  "xlsx": {"text": "Revenue", "sheet": "Financials", "cell": "B2"},
+  "pptx": {"text": "PPTX evidence slide", "slide": 1},
+  "rtf": {"text": "RTF evidence"},
+  "image": {"width": 120, "height": 60},
+  "zip": {"text": "Packaged evidence", "member": "inside.txt"}
+}
