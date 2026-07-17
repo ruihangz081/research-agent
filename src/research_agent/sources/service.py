@@ -160,6 +160,39 @@ class SourceService:
         self._audit(project_id, source_id, actor, "source.ocr_completed", {"pages": document.quality.ocr_pages})
         return document
 
+    def index_source(self, project_id: str, source_id: str, actor: str = "worker"):
+        from .chunking import chunk_document
+        source = self.get_source(project_id, source_id)
+        document = self.repository.get_document(source_id, project_id)
+        if document is None:
+            document = self.parse_source(project_id, source_id, actor)
+        chunks = chunk_document(source, document)
+        self.repository.replace_chunks(source_id, chunks)
+        self._audit(project_id, source_id, actor, "source.indexed", {"chunks": len(chunks)})
+        return chunks
+
+    def search(self, project_id: str, query: str, **kwargs):
+        from .search import HybridSearchIndex
+        return HybridSearchIndex(self.repository).search(project_id, query, **kwargs)
+
+    def read_chunk(self, project_id: str, chunk_id: str):
+        chunk = self.repository.get_chunk(chunk_id, project_id)
+        if chunk is None:
+            raise KeyError("chunk not found in project")
+        source = self.get_source(project_id, chunk.source_id)
+        return {"source": source, "chunk": chunk, "raw_excerpt": chunk.text}
+
+    def record_evidence(self, evidence, actor: str = "agent"):
+        source = self.get_source(evidence.project_id, evidence.source_id)
+        if source.version != evidence.source_version:
+            raise ValueError("evidence source version is stale")
+        chunk = self.repository.get_chunk(evidence.chunk_id, evidence.project_id)
+        if chunk is None or evidence.excerpt not in chunk.text:
+            raise ValueError("evidence excerpt is not present in project chunk")
+        self.repository.put_evidence(evidence)
+        self._audit(evidence.project_id, evidence.source_id, actor, "evidence.recorded", {"evidence_id": evidence.evidence_id})
+        return evidence
+
     def get_source(self, project_id: str, source_id: str) -> SourceAsset:
         source = self.repository.get_source(source_id, project_id)
         if source is None:

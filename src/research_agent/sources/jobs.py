@@ -79,6 +79,8 @@ class SourceWorker:
                         source.updated_at = utcnow()
                         self.repository.update_source(source)
                         job.error = str(exc)
+                self.service.index_source(job.project_id, job.source_id, actor=self.worker_id)
+                self._progress(job, 90)
             elif job.job_type == "delete":
                 if not job.source_id:
                     raise ValueError("delete job requires source_id")
