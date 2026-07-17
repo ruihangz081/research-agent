@@ -37,6 +37,11 @@ app.include_router(create_sources_router(_source_service, _source_queue))
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+
+@app.get("/materials", include_in_schema=False)
+async def materials_center() -> FileResponse:
+    return FileResponse(STATIC_DIR / "materials.html")
+
 JOBS: dict[str, dict[str, Any]] = {}
 LOCKS: dict[str, asyncio.Lock] = {}
 
