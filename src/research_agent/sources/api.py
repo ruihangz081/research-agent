@@ -12,6 +12,7 @@ from .jobs import JobQueue
 from .models import EvidenceRecord
 from .repository import SQLiteRepository
 from .search import SearchFilters
+from .quality import ResearchRequirement
 from .service import SourceService
 from .storage import LocalObjectStore
 
@@ -152,6 +153,10 @@ def create_sources_router(service: SourceService, queue: JobQueue) -> APIRouter:
             return {"source": source, "document": service.repository.get_document(source_id, project_id)}
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @router.post("/quality-gate")
+    async def quality_gate(project_id: str, requirements: list[dict]):
+        return service.quality_gate(project_id, [ResearchRequirement(**item) for item in requirements])
 
     @router.get("/sources/{source_id}/evidence")
     async def inspect_evidence(project_id: str, source_id: str):

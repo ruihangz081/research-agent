@@ -193,6 +193,10 @@ class SourceService:
         self._audit(evidence.project_id, evidence.source_id, actor, "evidence.recorded", {"evidence_id": evidence.evidence_id})
         return evidence
 
+    def quality_gate(self, project_id: str, requirements):
+        from .quality import QualityGate
+        return QualityGate(self.repository).evaluate(project_id, requirements)
+
     def get_source(self, project_id: str, source_id: str) -> SourceAsset:
         source = self.repository.get_source(source_id, project_id)
         if source is None:
