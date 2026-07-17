@@ -1,0 +1,150 @@
+"""Project-scoped domain service shared by Web, CLI, workers, and agent tools."""
+from __future__ import annotations
+
+import mimetypes
+import re
+import uuid
+from pathlib import Path
+
+from .enums import SourceStatus
+from .models import AuditEvent, SourceAsset, SourceIngestResult, utcnow
+from .repository import SQLiteRepository
+from .security import SourceSecurityError, inspect_zip, safe_filename, sha256_bytes
+from .storage import LocalObjectStore
+
+
+_MEDIA_SIGNATURES = (
+    (b"%PDF-", "application/pdf"),
+    (b"PK\x03\x04", "application/zip"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"II*\x00", "image/tiff"),
+    (b"MM\x00*", "image/tiff"),
+)
+
+
+def _id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _logical_source_id(filename: str) -> str:
+    stem = Path(filename).stem.casefold()
+    slug = re.sub(r"[^a-z0-9一-鿿]+", "-", stem).strip("-")
+    return slug or uuid.uuid4().hex
+
+
+def detect_media_type(filename: str, data: bytes) -> str:
+    for signature, media_type in _MEDIA_SIGNATURES:
+        if data.startswith(signature):
+            if media_type == "application/zip":
+                extension = Path(filename).suffix.lower()
+                return {
+                    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                }.get(extension, media_type)
+            return media_type
+    guessed = mimetypes.guess_type(filename)[0]
+    return guessed or "application/octet-stream"
+
+
+class SourceService:
+    def __init__(self, repository: SQLiteRepository, object_store: LocalObjectStore, max_upload_bytes: int = 512 * 1024 * 1024):
+        self.repository = repository
+        self.object_store = object_store
+        self.max_upload_bytes = max_upload_bytes
+
+    def register_bytes(
+        self,
+        project_id: str,
+        filename: str,
+        data: bytes,
+        *,
+        collection_id: str | None = None,
+        logical_source_id: str | None = None,
+        actor: str = "user",
+        confidentiality: str = "internal",
+    ) -> SourceIngestResult:
+        if not project_id or "/" in project_id or "\\" in project_id or project_id in {".", ".."}:
+            raise SourceSecurityError("invalid project_id")
+        filename = safe_filename(filename)
+        if not data:
+            raise SourceSecurityError("empty uploads are not allowed")
+        if len(data) > self.max_upload_bytes:
+            raise SourceSecurityError("upload exceeds configured size limit")
+        if Path(filename).suffix.lower() == ".zip":
+            inspect_zip(data)
+        digest = sha256_bytes(data)
+        existing = self.repository.get_by_sha256(project_id, digest)
+        if existing:
+            self._audit(project_id, existing.source_id, actor, "source.deduplicated", {"sha256": digest})
+            return SourceIngestResult(source=existing, deduplicated=True)
+
+        logical_id = logical_source_id or _logical_source_id(filename)
+        latest = self.repository.latest_version(project_id, logical_id)
+        version = latest + 1
+        digest, storage_uri = self.object_store.put(data)
+        now = utcnow()
+        source = SourceAsset(
+            source_id=_id("src"), project_id=project_id, collection_id=collection_id,
+            logical_source_id=logical_id, version=version, original_filename=filename,
+            detected_media_type=detect_media_type(filename, data), file_size=len(data), sha256=digest,
+            storage_uri=storage_uri, status=SourceStatus.QUARANTINED, enabled=False,
+            confidentiality=confidentiality, created_at=now, updated_at=now,
+        )
+        if not self.repository.put_source(source):
+            winner = self.repository.get_by_sha256(project_id, digest)
+            if winner:
+                return SourceIngestResult(source=winner, deduplicated=True)
+            raise RuntimeError("source uniqueness conflict")
+        if latest:
+            for previous in self.repository.list_sources(project_id, include_superseded=True):
+                if previous.logical_source_id == logical_id and previous.version == latest:
+                    previous.status = SourceStatus.SUPERSEDED
+                    previous.enabled = False
+                    previous.updated_at = now
+                    self.repository.update_source(previous)
+                    break
+        self._audit(project_id, source.source_id, actor, "source.registered", {
+            "filename": filename, "sha256": digest, "version": version, "media_type": source.detected_media_type,
+        })
+        return SourceIngestResult(source=source)
+
+    def get_source(self, project_id: str, source_id: str) -> SourceAsset:
+        source = self.repository.get_source(source_id, project_id)
+        if source is None:
+            raise KeyError("source not found in project")
+        return source
+
+    def list_sources(self, project_id: str, include_superseded: bool = False) -> list[SourceAsset]:
+        return self.repository.list_sources(project_id, include_superseded)
+
+    def raw_bytes(self, project_id: str, source_id: str) -> bytes:
+        source = self.get_source(project_id, source_id)
+        return self.object_store.get(source.sha256)
+
+    def activate(self, project_id: str, source_id: str, actor: str = "user") -> SourceAsset:
+        source = self.get_source(project_id, source_id)
+        if source.status not in {SourceStatus.READY, SourceStatus.NEEDS_REVIEW, SourceStatus.ACTIVE}:
+            raise ValueError(f"source cannot be activated from {source.status.value}")
+        source.status = SourceStatus.ACTIVE
+        source.enabled = True
+        source.updated_at = utcnow()
+        self.repository.update_source(source)
+        self._audit(project_id, source_id, actor, "source.activated", {})
+        return source
+
+    def archive(self, project_id: str, source_id: str, actor: str = "user") -> SourceAsset:
+        source = self.get_source(project_id, source_id)
+        source.status = SourceStatus.ARCHIVED
+        source.enabled = False
+        source.updated_at = utcnow()
+        self.repository.update_source(source)
+        self._audit(project_id, source_id, actor, "source.archived", {})
+        return source
+
+    def _audit(self, project_id: str, source_id: str | None, actor: str, action: str, details: dict) -> None:
+        self.repository.put_audit(AuditEvent(
+            event_id=_id("audit"), project_id=project_id, source_id=source_id,
+            actor=actor, action=action, details=details,
+        ))
