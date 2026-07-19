@@ -59,7 +59,7 @@ Agent4 生成 04_analysis.md
 ### 2.3 必须废止的做法
 
 - 不再让 LLM 输出完整 LaTeX 文档。
-- 不再让 LLM 直接编写 TikZ/PGFPlots 坐标或任意绘图代码。
+- 不再让 LLM 直接编写 TikZ/PGFPlots、Python、JavaScript 或其他任意绘图代码；注册图表无法表达时，只允许进入受控的声明式自绘通道。
 - 不再从自然语言段落中临时抓数字并自动拼图。
 - 不再保留两个内容不同的“普通 PDF”和“高级 PDF”渲染器。
 - 不再用正则和逐行判断维护自制 Markdown 子集。
@@ -128,6 +128,7 @@ LLM 可以：
 - 生成图表标题、核心结论和解释文字；
 - 指定需要引用的已存在数据集和指标 ID；
 - 建议图表在报告中的章节位置。
+- 在注册图表库无法表达研究意图时，申请 `llm_declarative` 兜底，并生成受限的声明式图表规范。
 
 LLM 不可以：
 
@@ -136,7 +137,7 @@ LLM 不可以：
 - 在没有 DataPoint 的情况下从正文抓取数字；
 - 修改已验证数据、单位、公式或来源；
 - 自由决定颜色、字体、尺寸和图例位置；
-- 创建契约未支持的图表类型。
+- 绕过注册图表和声明式兜底契约创建其他图表类型。
 
 ### 4.2 单一内容模型，多种确定性输出
 
@@ -151,14 +152,18 @@ ReportDocument
   └── PDF 报告：正式交付
 ```
 
-### 4.3 一套图表渲染器
+### 4.3 一个规范资产标准，两级受控渲染
 
-第一正式版本使用 Python Matplotlib 作为唯一规范图表引擎：
+第一正式版本采用“注册渲染器优先、LLM 声明式自绘兜底”的两级机制，但所有正式图表必须输出相同的规范资产和通过相同质量门禁：
 
-- 同一个 `ChartSpec` 同时输出 SVG 和 PDF；
+- 一级使用 Python Matplotlib 注册渲染器，覆盖折线、柱状、堆叠柱、散点、瀑布和矩阵等高频图表；
+- 二级在一级无法表达研究意图时，由 LLM 生成受限 Vega-Lite JSON，经过 Schema、字段、变换、数据和主题校验后隔离渲染；
+- 同一个 `ChartSpec` 或 `LLMDeclarativeChartSpec` 同时输出 SVG 和 PDF；
 - SVG 用于 Web，PDF 用于 LaTeX；
 - PNG 只作为外部系统兼容和缩略图，不作为正式 PDF 的首选资产；
-- 不同时维护 Matplotlib 和 ECharts 两套视觉规则；
+- 两级渲染共享 `brokerage_research_v1` 主题适配器、图注、来源、证据和质量门禁；
+- LLM 兜底规范不得携带外部数据、任意表达式、任意脚本或自由样式；
+- 不同时维护 Matplotlib 和 ECharts 两套业务数据与证据逻辑；
 - 如未来增加交互图表，ECharts 只能作为 Web 增强层，静态 SVG 仍是正式内容基准。
 
 ### 4.4 设计系统优先于单份报告美化
@@ -431,7 +436,43 @@ class ChartSpec(BaseModel):
 
 `ChartSpec` 只描述语义和受控选项，不接受颜色代码、任意字体、像素坐标、Python 代码、JavaScript 或 LaTeX。
 
-### 7.6 TableSpec
+### 7.6 LLMDeclarativeChartSpec
+
+当注册图表无法表达已经确认需要可视化的研究意图时，系统允许 LLM 生成受控声明式规范：
+
+```python
+class LLMDeclarativeChartSpec(BaseModel):
+    chart_id: str
+    title: str
+    takeaway: str
+    dataset_id: str
+    render_mode: Literal["llm_declarative"] = "llm_declarative"
+    dialect: Literal["vega_lite_subset_v1"]
+    declarative_spec: dict[str, Any]
+    fallback_reason: str
+    source_note: str
+    as_of_date: str
+    alt_text: str
+    theme_id: str
+    theme_version: str
+```
+
+约束：
+
+- `declarative_spec` 使用版本锁定的 Vega-Lite 子集；
+- 数据源只能写成系统占位名称，运行时由程序绑定 `dataset_id`，禁止 `url`、任意路径和模型内联数据；
+- 字段必须来自 Dataset schema，禁止使用模型创造的字段；
+- 允许受控的 mark、encoding、layer、facet、repeat 和 concat；
+- 聚合、分箱、时间单位、排序和堆叠只允许白名单参数；
+- 禁止 `calculate`、表达式型 filter、lookup、外部 image、signal、任意 JavaScript 和外部资源；
+- LLM 提供的颜色、字体、宽高、背景和 config 会被删除，由正式主题重新注入；
+- 限制层数、子图数、字段数和总数据点；
+- 必须保存触发兜底的原因、原始规范、清洗后规范、验证结果和渲染诊断；
+- 兜底图表与注册图表执行同一证据、内容一致性、可访问性和视觉质量门禁。
+
+这一级属于“LLM 自己设计图形语法”，但不等于执行 LLM 任意代码。
+
+### 7.7 TableSpec
 
 ```python
 class TableSpec(BaseModel):
@@ -456,7 +497,7 @@ class TableSpec(BaseModel):
 - 小数精度、空值表示和单位；
 - 是否允许换行和是否可以在窄屏隐藏。
 
-### 7.7 ReportDocument
+### 7.8 ReportDocument
 
 ```python
 class ReportDocument(BaseModel):
@@ -497,7 +538,7 @@ class ReportDocument(BaseModel):
 
 禁止在正式结构中保存任意 HTML 或任意 LaTeX。
 
-### 7.8 RenderManifest
+### 7.9 RenderManifest
 
 ```python
 class RenderManifest(BaseModel):
@@ -547,7 +588,7 @@ Analyst 不再只生成 Markdown。分析阶段同时生成：
 - 允许的图表类型；
 - 报告类型和版面预算。
 
-输出仅为 `ChartSpec`。程序必须拒绝：
+输出优先为注册 `ChartSpec`。程序必须拒绝：
 
 - 未知 dataset/measure/dimension；
 - 不受支持的图表类型；
@@ -558,6 +599,8 @@ Analyst 不再只生成 Markdown。分析阶段同时生成：
 - 占比合计明显异常；
 - 未标记的预测数据；
 - 缺少来源说明或截止日期。
+
+当拒绝原因是“现有注册图表无法表达研究意图”，而不是数据、证据、口径或安全问题时，规划器必须进入 LLM 声明式自绘兜底流程。数据不足、证据不足和口径冲突不能通过兜底绕过。
 
 ### 8.3 图表选择规则
 
@@ -580,7 +623,42 @@ Analyst 不再只生成 Markdown。分析阶段同时生成：
 - 多环饼图；
 - 桑基图和网络图，除非后续建立独立、可验证的关系数据契约。
 
-### 8.4 图表数量与信息密度
+### 8.4 LLM 声明式自绘兜底
+
+触发条件必须同时满足：
+
+1. 图表任务被标记为 `required` 或 `recommended`；
+2. 数据集已通过证据、单位、口径和公式门禁；
+3. 注册图表选择器返回 `unsupported_semantics`，而不是数据质量错误；
+4. 图表意图无法通过拆分、小多图或现有表格合理表达；
+5. 当前项目允许使用 LLM 自绘兜底。
+
+执行流程：
+
+```text
+VisualizationRequirement
+  → 注册图表选择失败（unsupported_semantics）
+  → 向 LLM 提供 Dataset schema、字段统计、研究意图和允许的 Vega-Lite 子集
+  → LLM 生成 LLMDeclarativeChartSpec
+  → JSON Schema 校验
+  → 删除自由样式并注入 brokerage_research_v1
+  → 程序绑定已验证 Dataset
+  → 字段、变换、复杂度和安全校验
+  → 隔离渲染 SVG/PDF
+  → 证据、内容、视觉和可访问性门禁
+  → 通过后进入 ReportDocument
+```
+
+重试与失败规则：
+
+- 第一次规范校验失败时，将结构化错误反馈给 LLM 修复；
+- 最多允许 2 次修复，不进行无限自修复；
+- 同一规范错误重复出现时立即停止；
+- 最终失败后按“小多图 → 表格 → KPI 卡片 → 明确缺口”降级；
+- 降级原因写入 QualityReport，必需图表未完成时阻断正式发布；
+- LLM 自绘产物必须显示“自定义声明式图表”内部标记，供审计使用，但不在面向读者的报告中暴露技术标签。
+
+### 8.5 图表数量与信息密度
 
 - 每张图只表达一个主要结论；
 - 单页一般不超过 2 张主要图；
@@ -607,7 +685,24 @@ Analyst 不再只生成 Markdown。分析阶段同时生成：
 8. 保存输入哈希、资产哈希和诊断；
 9. 执行空图、边界、文本碰撞和文件有效性检查。
 
-### 9.2 输出资产
+### 9.2 LLM 声明式兜底渲染器
+
+`DeclarativeFallbackRenderer` 使用版本锁定的 Vega-Lite Schema 和 `vl-convert` 隔离渲染：
+
+1. 加载 `LLMDeclarativeChartSpec`；
+2. 验证只使用允许的 Vega-Lite 子集；
+3. 把 Dataset 转换为受控行记录，并在内存中绑定到固定 data name；
+4. 删除 LLM 自定义 config、颜色、字体、宽高和外部引用；
+5. 通过主题适配器注入正式色板、字体、轴、图例、间距和预测样式；
+6. 在无网络、只读文件系统、CPU/内存/时间受限的 Worker 中渲染；
+7. 输出 SVG/PDF/PNG 后执行与 Matplotlib 相同的资产检查；
+8. 将原始规范、清洗后规范、Schema 版本和渲染器版本写入 RenderManifest。
+
+Vega-Lite 只作为声明式图形语法和兜底编译器，不能成为第二套事实、公式、来源或发布系统。
+
+实现依据使用官方版本化规范：[Vega-Lite Specification](https://vega.github.io/vega-lite/docs/spec.html) 与 [vl-convert](https://github.com/vega/vl-convert)。生产代码必须锁定 Schema 和渲染器版本，不能在运行时跟随 latest 漂移。
+
+### 9.3 输出资产
 
 每张图生成：
 
@@ -618,13 +713,14 @@ Analyst 不再只生成 Markdown。分析阶段同时生成：
 ├── thumbnail.png
 ├── data.csv
 ├── spec.json
+├── llm_declarative_spec.json  # 仅兜底图表存在
 ├── provenance.json
 └── diagnostics.json
 ```
 
 正式报告图注、来源和备注由模板统一排版，不烘焙进图像主体；独立下载版本可以额外生成带完整标题和来源的 standalone SVG/PNG。
 
-### 9.3 渲染缓存
+### 9.4 渲染缓存
 
 缓存键至少包含：
 
@@ -640,7 +736,7 @@ SHA256(
 
 命中缓存时仍要验证资产存在和哈希一致。主题、字体、渲染器或数据版本变化必须自动失效。
 
-### 9.4 字体策略
+### 9.5 字体策略
 
 - 生产环境固定安装并嵌入中文字体，不依赖宿主机随机字体；
 - 默认无衬线用于图表与表格，正文可配置衬线或无衬线；
@@ -1017,6 +1113,9 @@ CLI、Web 和 Agent 必须调用同一个 Report Service，不复制业务逻辑
 - 黑白渲染后实际/预测和不同系列仍可区分；
 - 图表数据 CSV 与渲染输入哈希一致；
 - 空图和全缺失图直接阻断。
+- LLM 声明式图表通过锁定版本的 JSON Schema 和允许字段校验；
+- LLM 声明式图表不含 URL、任意表达式、脚本、外部资源或自由样式；
+- 原始规范、清洗后规范和实际渲染资产之间的哈希链完整；
 
 ### 15.4 表格门禁
 
@@ -1068,6 +1167,8 @@ AND Visual Regression Gate
 - 单位、币种和期间标准化；
 - Decimal 公式与舍入；
 - 图表类型选择规则；
+- 注册图表无法表达时的 LLM 声明式兜底触发与禁止条件；
+- Vega-Lite 子集 Schema、字段白名单和危险配置拒绝；
 - 标签、数轴和排序策略；
 - Markdown AST 到 ReportBlock；
 - HTML/LaTeX 转义；
@@ -1078,6 +1179,7 @@ AND Visual Regression Gate
 ### 16.2 集成测试
 
 - EvidenceRecord → Dataset → ChartSpec → SVG/PDF；
+- EvidenceRecord → Dataset → LLMDeclarativeChartSpec → SVG/PDF；
 - ReportDocument → HTML/LaTeX/PDF；
 - 长中文标题、长 URL 和复杂表格；
 - 预测值和实际值混合；
@@ -1140,6 +1242,9 @@ AND Visual Regression Gate
 - 所有 Markdown、标题、来源和 URL 必须转义；
 - 禁止任意 HTML、JavaScript、LaTeX 宏和 shell escape；
 - 图表渲染器只接收 Pydantic 校验后的受控字段；
+- LLM 自绘只允许声明式 JSON；禁止执行模型生成的 Python、JavaScript、LaTeX、shell 或任意表达式；
+- 声明式规范禁止 URL、外部数据、外部图片和外部字体，Dataset 由程序在内存中绑定；
+- 兜底渲染运行在无网络、只读文件系统和资源受限的隔离 Worker；
 - LaTeX 编译在受限用户和临时目录执行；
 - 限制报告长度、图表数量、单图数据点数、编译时间和内存；
 - 外部图片默认禁止，允许时必须先下载、扫描、固化和记录哈希；
@@ -1246,6 +1351,7 @@ AND Visual Regression Gate
 建议新增依赖：
 
 - `matplotlib`：规范图表渲染；
+- `vl-convert-python`：将通过校验的 Vega-Lite 兜底规范离线渲染为 SVG/PDF/PNG；
 - `jinja2`：受控 HTML/LaTeX 模板；
 - `markdown-it-py`：Markdown AST；
 - `mdit-py-plugins`：脚注等受控扩展；
@@ -1263,6 +1369,10 @@ REPORT_RENDER_WORKERS=
 REPORT_RENDER_TIMEOUT=
 REPORT_MAX_CHARTS=
 REPORT_MAX_POINTS_PER_CHART=
+REPORT_LLM_CHART_FALLBACK_ENABLED=true
+REPORT_LLM_CHART_FALLBACK_MAX_REPAIRS=2
+REPORT_LLM_CHART_DIALECT=vega_lite_subset_v1
+REPORT_LLM_CHART_SCHEMA_VERSION=
 REPORT_MAX_PAGES=
 REPORT_CACHE_DIR=
 REPORT_KEEP_RENDER_HISTORY=
@@ -1347,6 +1457,8 @@ REPORT_FONT_MANIFEST=
 交付：
 
 - 6 类正式图表；
+- 注册图表不支持时的 LLM 声明式自绘兜底；
+- Vega-Lite 子集 Schema、主题适配器和隔离渲染器；
 - `brokerage_research_v1` 主题；
 - SVG/PDF/PNG/CSV/alt text；
 - 字体、标签、图例、预测样式和黑白规则；
@@ -1357,6 +1469,7 @@ REPORT_FONT_MANIFEST=
 - 所有图表黄金样本通过；
 - 相同输入重复渲染稳定；
 - 空图、碰撞和非法配置可被阻断。
+- 受支持的自定义研究意图可以通过兜底生成图表，危险或越权规范全部被拒绝。
 
 ### M4：结构化报告与 Markdown 适配
 
@@ -1520,6 +1633,8 @@ REPORT_FONT_MANIFEST=
 ### 图表
 
 - [ ] 6 类图表均有生产实现和黄金样本；
+- [ ] 注册图表无法表达的必要图表可以进入受控 LLM 声明式自绘兜底；
+- [ ] LLM 兜底不执行任意代码、不访问外部数据，并保留完整原始/清洗规范审计；
 - [ ] SVG/PDF/PNG/CSV/alt text 全部生成；
 - [ ] 标题、takeaway、单位、来源、日期和备注完整；
 - [ ] 标签、图例和注释无重叠或裁切；
