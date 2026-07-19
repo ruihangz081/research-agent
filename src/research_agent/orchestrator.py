@@ -22,6 +22,9 @@ from rich.console import Console
 
 from . import checkpoints, config
 from .agents import analyst, collector, formatter, strategist, validator
+from .sources.api import build_runtime
+from .sources.enums import VerificationStatus
+from .sources.quality import ResearchRequirement
 from .state import ProjectState, Stage
 
 console = Console()
@@ -83,6 +86,44 @@ class PipelineError(RuntimeError):
     """流水线阶段不可恢复的错误。"""
 
     pass
+
+
+def _deterministic_convergence(state: ProjectState, feedback: validator.ValidationFeedback) -> bool:
+    """A model convergence claim is advisory; persisted evidence decides readiness."""
+    service, _ = build_runtime(config.SOURCE_DATA_DIR)
+    project_id = state.project_dir.name
+    evidence = service.repository.list_evidence(project_id)
+    supported_questions = sorted({
+        item.research_question_id
+        for item in evidence
+        if item.verification_status == VerificationStatus.SUPPORTED
+    })
+    requirements = [ResearchRequirement(question_id=value) for value in supported_questions]
+    gate = service.quality_gate(project_id, requirements)
+    service.repository.close()
+    unresolved_conflicts = [item.topic for item in feedback.conflicts if not item.resolution]
+    reasons = list(gate.reasons)
+    if feedback.gap_list:
+        reasons.append(f"validation gaps remain: {len(feedback.gap_list)}")
+    if unresolved_conflicts:
+        reasons.append(f"unresolved feedback conflicts: {', '.join(unresolved_conflicts)}")
+    if not feedback.converged:
+        reasons.append("validator did not declare convergence")
+    ready = feedback.converged and not feedback.gap_list and not unresolved_conflicts and gate.passed
+    state.notes["quality_gate"] = gate.status.value
+    state.notes["quality_gate_reasons"] = sorted(set(reasons))
+    return ready
+
+
+def _assert_delivery_ready(state: ProjectState) -> None:
+    service, _ = build_runtime(config.SOURCE_DATA_DIR)
+    project_id = state.project_dir.name
+    evidence = service.repository.list_evidence(project_id)
+    questions = sorted({item.research_question_id for item in evidence if item.verification_status == VerificationStatus.SUPPORTED})
+    gate = service.quality_gate(project_id, [ResearchRequirement(question_id=value) for value in questions])
+    service.repository.close()
+    if not gate.passed:
+        raise PipelineError(f"确定性质量门槛阻断交付：{gate.status.value}: {'; '.join(gate.reasons)}")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -208,21 +249,23 @@ async def _run_pipeline_inner(state: ProjectState) -> None:
             # 更新状态
             state.collect_round = round_idx
             state.last_feedback_path = str(fb_path)
-            state.converged = fb_obj.converged
+            state.converged = _deterministic_convergence(state, fb_obj)
             state.save()
 
             console.print(
-                f"\n[dim]── 第 {round_idx} 轮结束 | converged={fb_obj.converged} "
+                f"\n[dim]── 第 {round_idx} 轮结束 | model_converged={fb_obj.converged} "
+                f"| deterministic_converged={state.converged} "
                 f"| drop={len(fb_obj.drop_sources)} gap={len(fb_obj.gap_list)} ──[/dim]\n"
             )
 
-            if fb_obj.converged:
-                console.print("[green]✓ Agent3 判定数据已收敛[/green]")
+            if state.converged:
+                console.print("[green]✓ 确定性证据门槛判定数据已收敛[/green]")
                 break
 
         if not state.converged:
-            console.print(
-                f"[yellow]⚠ 达到最大轮次 {max_rounds}，循环终止（仍有遗留 gap）[/yellow]"
+            raise PipelineError(
+                f"达到最大轮次 {max_rounds}，但证据质量门槛未通过："
+                f"{'; '.join(state.notes.get('quality_gate_reasons', []))}"
             )
 
         # 读取最后一轮反馈生成终稿源清单
@@ -252,6 +295,7 @@ async def _run_pipeline_inner(state: ProjectState) -> None:
             title="《最终数据源清单》— 请查验",
         )
         if approved:
+            _assert_delivery_ready(state)
             state.advance_to(Stage.ANALYZING)
         else:
             state.notes["sources_feedback"] = feedback

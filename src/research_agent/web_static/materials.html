@@ -1,80 +1,68 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>材料中心 | Research Agent</title>
-  <link rel="stylesheet" href="/static/styles.css" />
-  <style>
-    body { background: #f5f6f8; color: #20242b; }
-    .material-shell { max-width: 1180px; margin: 0 auto; padding: 28px; }
-    .material-header { display:flex; align-items:end; justify-content:space-between; gap:24px; border-bottom:1px solid #d9dde3; padding-bottom:18px; }
-    .material-header h1 { margin:0; font-size:28px; }
-    .material-header p { margin:8px 0 0; color:#68717d; }
-    .toolbar, .search-row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:18px 0; }
-    input, button { min-height:38px; border:1px solid #cbd1d9; border-radius:6px; padding:0 12px; font:inherit; }
-    input { background:#fff; }
-    button { background:#20242b; color:#fff; cursor:pointer; }
-    button.secondary { background:#fff; color:#20242b; }
-    .source-table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #d9dde3; }
-    th, td { text-align:left; padding:12px; border-bottom:1px solid #e5e8ed; vertical-align:top; }
-    th { color:#68717d; font-size:13px; font-weight:600; }
-    .status { font-size:12px; color:#55606d; }
-    .result { margin-top:12px; padding:14px; border-left:3px solid #2368d1; background:#fff; }
-    .result pre { white-space:pre-wrap; margin:8px 0 0; font-family:inherit; }
-    .empty { padding:30px; text-align:center; color:#68717d; background:#fff; border:1px solid #d9dde3; }
-    @media (max-width:700px) { .material-shell { padding:16px; } .material-header { align-items:start; flex-direction:column; } th:nth-child(3), td:nth-child(3) { display:none; } }
-  </style>
-</head>
-<body>
-<main class="material-shell">
-  <header class="material-header">
-    <div><h1>材料中心</h1><p>项目材料、解析状态、版本和可追溯原文</p></div>
-    <a href="/" class="secondary">返回调研</a>
-  </header>
-  <section class="toolbar" aria-label="项目材料上传">
-    <input id="projectId" value="default-project" aria-label="项目 ID" />
-    <input id="files" type="file" multiple aria-label="选择材料" />
-    <button id="upload">上传材料</button>
-    <button id="refresh" class="secondary">刷新</button>
-    <span id="message" class="status"></span>
-  </section>
-  <section class="search-row" aria-label="材料搜索">
-    <input id="query" placeholder="搜索项目材料" aria-label="搜索关键词" style="flex:1;min-width:220px" />
-    <button id="search">搜索</button>
-  </section>
-  <section id="results"></section>
-  <section><table class="source-table"><thead><tr><th>文件</th><th>状态</th><th>版本</th><th>来源等级</th><th>操作</th></tr></thead><tbody id="sources"></tbody></table><div id="empty" class="empty" hidden>暂无材料</div></section>
-</main>
-<script>
-const $ = id => document.getElementById(id);
-const project = () => encodeURIComponent($("projectId").value.trim());
-const message = text => $("message").textContent = text;
-async function refresh() {
-  const response = await fetch(`/api/projects/${project()}/sources`);
-  const data = await response.json(); const rows = $("sources"); rows.innerHTML = "";
-  $("empty").hidden = data.items.length !== 0;
-  for (const source of data.items) {
-    const row = document.createElement("tr");
-    row.innerHTML = `<td>${source.original_filename}</td><td><span class="status">${source.status}</span></td><td>v${source.version}</td><td>${source.source_tier}</td><td><button class="secondary" data-id="${source.source_id}">预览</button></td>`;
-    row.querySelector("button").onclick = () => preview(source.source_id); rows.appendChild(row);
-  }
-}
-async function upload() {
-  const files = [...$("files").files]; if (!files.length) return message("请选择材料");
-  const body = new FormData(); files.forEach(file => body.append("files", file));
-  const response = await fetch(`/api/projects/${project()}/source-batches`, {method:"POST", body});
-  message(response.ok ? "材料已进入解析队列" : "上传失败"); await refresh();
-}
-async function preview(id) {
-  const response = await fetch(`/api/projects/${project()}/sources/${id}`); const data = await response.json();
-  const doc = data.document; $("results").innerHTML = `<div class="result"><strong>${data.source.original_filename}</strong><span class="status"> ${data.source.status}</span><pre>${doc ? doc.blocks.slice(0,8).map(block => block.text).join("\n\n") : "等待解析"}</pre></div>`;
-}
-async function search() {
-  const response = await fetch(`/api/projects/${project()}/source-search`, {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({query:$("query").value,limit:10})});
-  const data = await response.json(); $("results").innerHTML = data.items.map(item => `<div class="result"><strong>${item.source.original_filename}</strong><span class="status"> ${item.chunk.chunk_id}</span><pre>${item.chunk.text}</pre></div>`).join("") || '<div class="empty">没有匹配</div>';
-}
-$("upload").onclick = upload; $("refresh").onclick = refresh; $("search").onclick = search; refresh();
-</script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>材料中心 · 溯光 Lumitrace</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260719" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <div id="sidebarMount"></div>
+      <main class="main-column">
+        <header class="topbar">
+          <div class="topbar-left"><h1>材料中心</h1></div>
+          <div class="topbar-actions"><div class="search-box"><span id="globalSearchIcon"></span><input id="query" type="search" placeholder="搜索材料标题、文件名或内容" /></div></div>
+        </header>
+
+        <div class="page-content">
+          <section class="page-heading">
+            <div><h1>材料中心 <span class="heading-spark">●</span></h1><p>统一管理项目材料、解析状态、版本和可追溯原文。</p></div>
+          </section>
+
+          <div class="materials-layout">
+            <div>
+              <div class="toolbar">
+                <select id="projectSelect" aria-label="当前项目"></select>
+                <input id="files" type="file" multiple hidden />
+                <button id="chooseFiles" class="button primary" type="button"><span id="uploadIcon"></span>上传材料</button>
+                <button id="search" class="button secondary" type="button">搜索内容</button>
+                <select id="statusFilter" aria-label="状态筛选"><option value="">全部状态</option></select>
+                <select id="tierFilter" aria-label="来源等级"><option value="">全部等级</option><option value="S">S · 一手权威</option><option value="A">A · 头部机构</option><option value="B">B · 专业材料</option><option value="D">D · 低可信</option><option value="unclassified">未分类</option></select>
+                <button id="refresh" class="icon-button" type="button" title="刷新"></button>
+              </div>
+              <div id="message" class="muted" style="min-height:24px"></div>
+              <div id="summary" class="source-summary"></div>
+              <section class="panel table-scroll">
+                <table class="data-table">
+                  <thead><tr><th>材料标题和原始文件名</th><th>状态</th><th>版本</th><th>来源等级</th><th>更新时间</th><th>操作</th></tr></thead>
+                  <tbody id="sources"></tbody>
+                </table>
+                <div id="empty" class="empty hidden"><span class="empty-symbol">◇</span><strong>暂无材料</strong><p>上传研究材料后，系统会自动解析、OCR 并建立检索索引。</p><button class="button primary" type="button" data-choose-files>上传第一份材料</button></div>
+              </section>
+            </div>
+
+            <aside class="panel inspector">
+              <div class="panel-header"><h2 id="inspectorTitle">材料详情</h2><button id="closeInspector" class="icon-button" type="button" title="清空预览"></button></div>
+              <div id="inspectorBody" class="inspector-body"><div class="empty compact"><span class="empty-symbol">◇</span><strong>选择一份材料</strong><p>查看正文、解析警告和元数据。</p></div></div>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="editDrawer" class="drawer-backdrop" aria-hidden="true">
+      <aside class="drawer" role="dialog" aria-modal="true">
+        <div class="drawer-header"><div><h2>编辑材料信息</h2><p class="muted" id="editFilename"></p></div><button id="closeEdit" class="icon-button" type="button"></button></div>
+        <form id="editForm" class="drawer-form">
+          <input id="editSourceId" type="hidden" />
+          <label><span>材料标题</span><input id="editTitle" required /></label>
+          <label><span>来源等级</span><select id="editTier"><option value="S">S · 一手权威材料</option><option value="A">A · 头部研究机构</option><option value="B">B · 专业材料</option><option value="D">D · 低可信材料</option><option value="unclassified">未分类</option></select></label>
+          <div class="drawer-actions"><button id="cancelEdit" class="button secondary" type="button">取消</button><button id="saveEdit" class="button primary" type="submit">保存修改</button></div>
+        </form>
+      </aside>
+    </div>
+    <script src="/static/ui.js?v=20260719"></script>
+    <script src="/static/materials.js?v=20260719"></script>
+  </body>
 </html>

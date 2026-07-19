@@ -124,6 +124,9 @@
 
 ## 重要规则
 
+- 对每个准备保留的事实，必须先用 `ReadProjectSource` 回查原文，再调用 `RecordProjectEvidence` 保存结构化证据；`locator_json` 必须原样使用读取结果中的 locator
+- 没有成功写入 `EvidenceRecord` 的事实不得计入已覆盖，也不得令 `converged=true`
+- 冲突证据必须分别记录为 `supported` 或 `contradicted`；未解决冲突不得收敛
 - **两份产物都必须写到磁盘**，不要只在对话里贴内容
 - JSON 必须合法（可被 `json.loads` 解析）
 - **不编造验证结论**——没读到的数据就说未覆盖，不要替 Agent2 背锅

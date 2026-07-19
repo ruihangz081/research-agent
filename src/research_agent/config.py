@@ -28,8 +28,8 @@ STRATEGIST_MAX_ROUNDS: int = int(os.getenv("STRATEGIST_MAX_ROUNDS", "5"))
 
 # === 路径 ===
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
-PROJECTS_DIR: Path = PROJECT_ROOT / "projects"
-SOURCE_DATA_DIR: Path = Path(os.getenv("SOURCE_DATA_DIR", str(PROJECT_ROOT / ".data" / "sources")))
+PROJECTS_DIR: Path = Path(os.getenv("PROJECTS_DIR", str(PROJECT_ROOT / "projects"))).expanduser()
+SOURCE_DATA_DIR: Path = Path(os.getenv("SOURCE_DATA_DIR", str(PROJECT_ROOT / ".data" / "sources"))).expanduser()
 
 # === 产物文件名（每阶段固定） ===
 FILE_OUTLINE = "01_outline.md"
@@ -47,6 +47,7 @@ FILE_FEEDBACK_ROUND = "feedback_round_{n}.json"
 
 # === 循环上限 ===
 MAX_COLLECT_ROUNDS: int = int(os.getenv("MAX_COLLECT_ROUNDS", "3"))
+OUTPUT_PREFERENCE: str = os.getenv("OUTPUT_PREFERENCE", "balanced")
 
 # === 检查点文件（用户确认后由 CLI 写入） ===
 APPROVAL_MARK = ".approved"

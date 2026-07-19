@@ -8,6 +8,7 @@ from pathlib import Path
 from .api import build_runtime
 from .jobs import SourceWorker
 from .search import SearchFilters
+from .operations import backup_source_data, rebuild_project_indexes, verify_consistency
 
 
 def _json(value) -> None:
@@ -86,6 +87,17 @@ def inspect(args) -> int:
     return 0
 
 
+def operate(args) -> int:
+    service, _ = _runtime(args)
+    if args.action == "verify":
+        _json(verify_consistency(service.repository, service.object_store, args.project_id))
+    elif args.action == "rebuild-index":
+        _json(rebuild_project_indexes(service, args.project_id))
+    else:
+        _json({"destination": str(backup_source_data(service.repository, service.object_store, args.destination))})
+    return 0
+
+
 def configure_parser(subparsers) -> None:
     root = subparsers.add_parser("sources", help="manage project research materials")
     root.add_argument("--data-dir", default=".data/sources")
@@ -128,3 +140,12 @@ def configure_parser(subparsers) -> None:
     command.add_argument("project_id")
     command.add_argument("source_id")
     command.set_defaults(func=inspect)
+
+    for action in ("verify", "rebuild-index"):
+        command = commands.add_parser(action)
+        command.add_argument("project_id")
+        command.set_defaults(func=operate, action=action)
+
+    command = commands.add_parser("backup")
+    command.add_argument("destination", type=Path)
+    command.set_defaults(func=operate, action="backup")

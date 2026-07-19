@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>成果中心 · 溯光 Lumitrace</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260719" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <div id="sidebarMount"></div>
+      <main class="main-column">
+        <header class="topbar">
+          <div class="topbar-left"><h1>成果中心</h1></div>
+          <div class="topbar-actions"><a class="button primary" href="/research?new=1">✦ 开始调研</a></div>
+        </header>
+        <div class="page-content">
+          <section class="page-heading">
+            <div><h1>成果中心</h1><p>查看、预览并导出项目产生的所有研究成果。</p></div>
+            <div class="toolbar"><select id="projectSelect" aria-label="项目筛选"></select><select id="typeFilter" aria-label="成果类型"><option value="">全部类型</option><option value="report">报告与分析</option><option value="source">信息源</option><option value="round">轮次数据</option><option value="delivery">交付文件</option></select></div>
+          </section>
+
+          <div id="resultsEmpty" class="panel empty hidden"><span class="empty-symbol">◇</span><strong>暂无可查看的成果</strong><p>研究开始运行后，各阶段成果会自动出现在这里。</p><a class="button primary" href="/research?new=1">新建调研</a></div>
+          <div id="resultsContent" class="results-layout hidden">
+            <div class="panel" style="overflow:hidden">
+              <div class="panel-header"><h2 id="previewTitle">成果预览</h2><span id="previewMeta" class="status-pill">等待选择</span></div>
+              <div style="display:grid;grid-template-columns:260px minmax(0,1fr);min-height:780px">
+                <nav id="resultList" class="results-list" aria-label="成果列表"></nav>
+                <div style="overflow:auto;background:#f6f8fd;padding:26px"><article id="documentPreview" class="document-sheet"></article></div>
+              </div>
+            </div>
+
+            <aside class="workspace-stack">
+              <section class="panel delivery-card">
+                <div><p class="eyebrow">生成状态</p><h3 id="generationStatus">—</h3></div>
+                <div class="meter" style="height:5px;border-radius:999px;background:#edf0f8;overflow:hidden"><div id="generationMeter" style="height:100%;background:var(--gradient);width:0"></div></div>
+              </section>
+              <section class="panel delivery-card">
+                <div><p class="eyebrow">导出与下载</p><h3>交付文件</h3></div>
+                <button id="downloadPdf" class="download-row" type="button"><span><strong>普通 PDF 下载</strong><small>标准排版的 PDF 文档</small></span><i id="pdfIcon"></i></button>
+                <button id="typeset" class="download-row" type="button"><span><strong>LaTeX 排版</strong><small>生成高级排版交付物</small></span><i id="typesetIcon"></i></button>
+                <button id="downloadTex" class="download-row" type="button"><span><strong>TeX 下载</strong><small>下载 .tex 源文件</small></span><i id="texIcon"></i></button>
+                <button id="downloadTypesetPdf" class="download-row" type="button"><span><strong>高级 PDF 下载</strong><small>LaTeX 高质量排版</small></span><i id="typesetPdfIcon"></i></button>
+              </section>
+              <section id="deliveryWarning" class="warning-box hidden"></section>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script src="/static/ui.js?v=20260719"></script>
+    <script src="/static/results.js?v=20260719"></script>
+  </body>
+</html>

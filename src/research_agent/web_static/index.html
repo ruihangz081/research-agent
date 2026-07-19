@@ -3,99 +3,69 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Research Agent</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <title>溯光 Lumitrace · 本地多智能体调研工作台</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260719" />
   </head>
-  <body>
-    <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark">RA</div>
-          <div>
-            <h1>Research Agent</h1>
-            <p id="configLine">模型连接中</p>
+  <body class="landing-body">
+    <header class="landing-header">
+      <a class="brand landing-brand" href="/" aria-label="溯光首页">
+        <span class="brand-sun" aria-hidden="true"></span>
+        <span><strong>溯光</strong><small>Lumitrace</small></span>
+      </a>
+      <nav class="landing-nav" aria-label="首页导航">
+        <a href="#product">产品</a>
+        <a href="#workflow">流程</a>
+        <a href="/research">工作台</a>
+        <a href="/results">成果</a>
+        <a href="/settings">设置</a>
+      </nav>
+      <a class="button primary landing-start" href="/research">→ 开始调研</a>
+    </header>
+
+    <main>
+      <section class="landing-hero">
+        <div class="hero-orbit orbit-one"></div>
+        <div class="hero-orbit orbit-two"></div>
+        <span class="hero-orb orb-one"></span>
+        <span class="hero-orb orb-two"></span>
+        <span class="hero-orb orb-three"></span>
+        <div class="hero-content">
+          <span class="hero-kicker"><i class="status-dot running"></i> LOCAL MULTI-AGENT RESEARCH SYSTEM <b>✦</b></span>
+          <h1>LUMITRACE</h1>
+          <p class="hero-subtitle">面向行业研究的本地多智能体调研工作台</p>
+          <div id="workflow" class="hero-flow" aria-label="研究流程">
+            <span>规划</span><i>→</i><span>搜集</span><i>→</i><span>验证</span><i>→</i><span>补采</span><i>→</i><span>分析</span><i>→</i><span>报告生成</span>
           </div>
+          <div class="hero-actions">
+            <a class="button primary" href="/research">→ 进入工作台</a>
+            <a class="button secondary" href="#product">◎ 查看能力</a>
+            <a class="button secondary" href="/research?new=1">＋ 新建调研</a>
+          </div>
+          <div class="hero-trust"><span>♢ 可追溯证据</span><span>·</span><span>可信来源</span><span>·</span><span>可复用成果</span></div>
         </div>
+      </section>
 
-        <form id="createForm" class="new-project">
-          <label>
-            <span>调研主题</span>
-            <input id="topicInput" name="topic" placeholder="例如：新能源汽车行业" required />
-          </label>
-          <label>
-            <span>补充要求</span>
-            <textarea
-              id="briefInput"
-              name="brief"
-              rows="5"
-              placeholder="目标、范围、输出偏好、重点问题"
-            ></textarea>
-          </label>
-          <label>
-            <span>采集验证轮次</span>
-            <input id="roundInput" name="rounds" type="number" min="1" max="5" value="3" />
-          </label>
-          <button class="primary" type="submit">新建调研</button>
-        </form>
+      <div class="landing-marquee" aria-hidden="true">
+        <span>TRUSTED RESEARCH</span><i>•</i><span>MULTI-AGENT LOOP</span><i>•</i><span>LUMITRACE</span><i>•</i><span>TRUSTED RESEARCH</span><i>•</i><span>MULTI-AGENT LOOP</span>
+      </div>
 
-        <div class="section-head">
-          <span>项目</span>
-          <button id="refreshBtn" class="icon-button" type="button" title="刷新">↻</button>
-        </div>
-        <nav id="projectList" class="project-list"></nav>
-      </aside>
-
-      <main class="workspace">
-        <section class="status-panel">
-          <div>
-            <p class="eyebrow">当前项目</p>
-            <h2 id="projectTitle">选择或新建一个调研</h2>
-          </div>
-          <div class="status-cluster">
-            <span id="stageBadge" class="badge">未选择</span>
-            <button id="continueBtn" class="secondary" type="button" disabled>继续运行</button>
-          </div>
-        </section>
-
-        <section id="checkpointPanel" class="checkpoint hidden">
-          <div class="checkpoint-main">
-            <p class="eyebrow">检查点</p>
-            <h3 id="checkpointTitle">等待审批</h3>
-            <textarea id="feedbackInput" rows="4" placeholder="驳回时填写修改意见"></textarea>
-          </div>
-          <div class="checkpoint-actions">
-            <button id="approveBtn" class="primary" type="button">通过</button>
-            <button id="rejectBtn" class="danger" type="button">驳回</button>
-          </div>
-        </section>
-
-        <section class="progress-panel">
-          <div class="meter-row">
-            <span>采集验证</span>
-            <span id="roundText">0 / 0</span>
-          </div>
-          <div class="meter"><div id="roundMeter"></div></div>
-          <div id="logList" class="logs"></div>
-        </section>
-      </main>
-
-      <aside class="inspector">
-        <div class="inspector-toolbar">
-          <span>产物预览</span>
-          <div class="toolbar-actions">
-            <button id="downloadPdfBtn" class="secondary small" type="button" disabled>普通 PDF</button>
-            <button id="typesetBtn" class="primary small" type="button" disabled>LaTeX 排版</button>
-            <button id="downloadTexBtn" class="secondary small" type="button" disabled>下载 TeX</button>
-            <button id="downloadTypesetPdfBtn" class="secondary small" type="button" disabled>高级 PDF</button>
-          </div>
-        </div>
-        <div class="tabs" id="artifactTabs"></div>
-        <article id="artifactView" class="artifact-view">
-          <div class="empty-state">暂无产物</div>
-        </article>
-      </aside>
-    </div>
-
-    <script src="/static/app.js"></script>
+      <section id="product" class="landing-features">
+        <a class="landing-feature" href="/research">
+          <span class="feature-icon">⌂</span><h2>研究首页</h2><p>全局视图，集中管理研究任务、状态与审批提醒。</p><div class="feature-mini"><span></span><span></span><span></span></div>
+        </a>
+        <a class="landing-feature" href="/workspace">
+          <span class="feature-icon">□</span><h2>项目工作区</h2><p>跟踪智能体执行、采集轮次、检查点与研究产物。</p><div class="feature-mini lines"><span></span><span></span><span></span></div>
+        </a>
+        <a class="landing-feature" href="/materials">
+          <span class="feature-icon">◇</span><h2>材料中心</h2><p>统一管理与检索材料，建立可复用的研究资产库。</p><div class="feature-mini files"><span></span><span></span><span></span></div>
+        </a>
+        <a class="landing-feature" href="/results">
+          <span class="feature-icon">▥</span><h2>成果中心</h2><p>沉淀洞察与报告，一键导出多种交付格式。</p><div class="feature-mini chart"><span></span><span></span><span></span></div>
+        </a>
+        <a class="landing-feature" href="/settings">
+          <span class="feature-icon">⚙</span><h2>设置</h2><p>查看模型、搜索、Embedding 与本地存储配置。</p><div class="feature-mini settings"><span></span><span></span><span></span></div>
+        </a>
+      </section>
+    </main>
   </body>
 </html>

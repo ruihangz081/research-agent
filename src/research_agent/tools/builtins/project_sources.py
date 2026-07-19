@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import uuid
 from functools import lru_cache
 
 from ... import config
 from ...sources.api import build_runtime
 from ...sources.search import SearchFilters
+from ...sources.enums import LocatorType, VerificationStatus
+from ...sources.models import EvidenceRecord, SourceLocator
 from ..registry import default_registry
 
 
@@ -56,3 +59,36 @@ async def inspect_source_evidence(project_id: str, source_id: str) -> str:
     return _dump({"project_id": project_id, "source_id": source_id, "source_version": source.version,
                   "evidence": [item.model_dump(mode="json") for item in evidence],
                   "audit": [item.model_dump(mode="json") for item in _service().repository.audit_events(project_id, source_id)]})
+
+
+@default_registry.tool(name="RecordProjectEvidence", description="Persist one verified claim from an exact project source chunk and stable locator.")
+async def record_project_evidence(
+    project_id: str,
+    research_question_id: str,
+    claim: str,
+    source_id: str,
+    source_version: int,
+    chunk_id: str,
+    excerpt: str,
+    locator_json: str,
+    verification_status: str = "supported",
+    normalized_value: str | None = None,
+    unit: str | None = None,
+    period: str | None = None,
+    confidence: float = 1.0,
+) -> str:
+    """Record evidence only after reading the exact source chunk."""
+    locator_data = json.loads(locator_json)
+    if "locator_type" not in locator_data:
+        locator_data["locator_type"] = LocatorType.OFFSET.value
+    source = _service().get_source(project_id, source_id)
+    evidence = EvidenceRecord(
+        evidence_id=f"ev_{uuid.uuid4().hex}", project_id=project_id,
+        research_question_id=research_question_id, claim=claim,
+        normalized_value=normalized_value, unit=unit, period=period,
+        source_id=source_id, source_version=source_version, chunk_id=chunk_id,
+        locator=SourceLocator.model_validate(locator_data), excerpt=excerpt,
+        source_tier=source.source_tier,
+        verification_status=VerificationStatus(verification_status), confidence=confidence,
+    )
+    return _dump(_service().record_evidence(evidence).model_dump(mode="json"))

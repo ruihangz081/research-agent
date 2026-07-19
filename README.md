@@ -13,6 +13,9 @@
 - **断点续跑**：任何阶段中断（Ctrl+C / 网络错误 / API 异常），状态自动保存，一行命令恢复
 - **异常自动重试**：每个阶段失败后自动重试 2 次，友好报错
 - **信息源 S/A/B/D 四级分层**：默认规则内置，杜绝低质信息
+- **统一材料中心**：PDF、Office、HTML、图片和压缩包统一解析、OCR、版本化和项目隔离检索
+- **确定性证据链**：Agent 必须保存精确 EvidenceRecord；未解决矛盾、无效定位或无证据会阻断交付
+- **真实混合检索**：关键词、同义词和数值归一化默认可用；配置 Embedding API 后启用真实语义向量融合
 
 ## 架构
 
@@ -70,6 +73,30 @@ LLM_MODEL=gpt-4o
 ```
 
 ## 使用
+
+### 启动材料中心
+
+```bash
+pip install -e '.[web,search]'
+SOURCE_DATA_DIR=.data/sources research-agent-web
+```
+
+打开 `http://127.0.0.1:8000/materials`，即可上传、查看处理进度、预览、编辑元数据、激活、重处理、比较版本、搜索和归档材料。本地 Web 会后台处理上传任务；生产环境仍建议单独运行：
+
+```bash
+research-agent-source-worker --data-dir .data/sources
+```
+
+CLI 使用同一个领域服务：
+
+```bash
+research-agent sources --data-dir .data/sources upload PROJECT report.pdf financials.xlsx
+research-agent sources --data-dir .data/sources process
+research-agent sources --data-dir .data/sources search PROJECT '2025 年营业收入'
+research-agent sources --data-dir .data/sources verify PROJECT
+research-agent sources --data-dir .data/sources rebuild-index PROJECT
+research-agent sources --data-dir .data/sources backup ./backups/2026-07-17
+```
 
 ### 启动新调研
 
@@ -145,7 +172,7 @@ research-agent/
 |---|---|---|---|
 | **Agent1 战略规划** | 多轮对话澄清目标/范围/交付物 → 生成提纲 | Read, Write | `01_outline.md` |
 | **Agent2 数据搜集** | 信息源识别+S/A/B/D分层 + 按级采集 | Read, Write, WebSearch, WebFetch | `02_sources_draft.md` + `round_N.md` |
-| **Agent3 信息验证** | 交叉验证、冲突检测、淘汰低质源 | Read, Write | `feedback_round_N.json` + `03_validation_report.md` |
+| **Agent3 信息验证** | 原文回查、EvidenceRecord、冲突检测、淘汰低质源 | ReadProjectSource, RecordProjectEvidence, Write | `feedback_round_N.json` + `03_validation_report.md` |
 | **Agent4 深度分析** | 波特五力/SWOT/PEST + 定量分析 | Read, Write, WebSearch, WebFetch | `04_analysis.md` |
 | **Agent5 排版交付** | 结构化排版 + 脚注 + 执行摘要 | Read, Write, WebSearch | `05_final_report.md` |
 
@@ -174,6 +201,11 @@ research-agent/
 | `SEARCH_API_KEY` | — | 搜索 API Key（DuckDuckGo 不需要） |
 | `STRATEGIST_MAX_ROUNDS` | `5` | Agent1 多轮对话上限 |
 | `MAX_COLLECT_ROUNDS` | `3` | Agent2↔3 采集-验证循环上限 |
+| `SOURCE_DATA_DIR` | `.data/sources` | 材料目录、SQLite catalog 和不可变原文件存储 |
+| `SOURCE_EMBEDDING_BASE_URL` | — | OpenAI 兼容 Embeddings API 地址；不配置则只使用离线检索 |
+| `SOURCE_EMBEDDING_API_KEY` | — | Embeddings API Key |
+| `SOURCE_EMBEDDING_MODEL` | — | 真实语义向量模型，例如多语言 embedding 模型 |
+| `SOURCE_API_KEYS_JSON` | — | 可选项目 ACL，例如 `{"key-a":["project-a"],"admin":"*"}` |
 
 ## License
 

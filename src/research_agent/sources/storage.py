@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import tempfile
 from pathlib import Path
 
@@ -34,6 +35,32 @@ class LocalObjectStore:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
         return digest, f"cas://{digest}"
+
+    def put_stream(self, stream, block_size: int = 1024 * 1024) -> tuple[str, str, int]:
+        """Persist a seekable upload without loading it into application memory."""
+        fd, temporary = tempfile.mkstemp(prefix=".upload-", dir=self.root)
+        digest = hashlib.sha256()
+        size = 0
+        try:
+            stream.seek(0)
+            with os.fdopen(fd, "wb") as handle:
+                while block := stream.read(block_size):
+                    digest.update(block)
+                    size += len(block)
+                    handle.write(block)
+                handle.flush()
+                os.fsync(handle.fileno())
+            value = digest.hexdigest()
+            destination = self._path(value)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                os.unlink(temporary)
+            else:
+                os.replace(temporary, destination)
+            return value, f"cas://{value}", size
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def get(self, digest: str) -> bytes:
         return self._path(digest).read_bytes()

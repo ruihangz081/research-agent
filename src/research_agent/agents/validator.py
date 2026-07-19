@@ -131,7 +131,7 @@ async def run_validation(
     options = AgentOptions(
         system_prompt=system_prompt,
         model=config.LLM_MODEL,
-        allowed_tools=["Read", "Write", "ReadProjectSource", "InspectSourceEvidence"],
+        allowed_tools=["Read", "Write", "SearchProjectSources", "ReadProjectSource", "RecordProjectEvidence", "InspectSourceEvidence"],
         cwd=str(state.project_dir),
         max_turns=30,
     )

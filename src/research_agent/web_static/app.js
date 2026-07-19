@@ -1,384 +1,175 @@
-const state = {
-  projects: [],
-  currentProjectId: null,
-  currentArtifactKey: null,
-  pollHandle: null,
-};
+Lumitrace.mountShell("workspace");
 
-const stageLabels = {
-  init: "初始化",
-  planning: "战略规划",
-  await_outline_approval: "等待提纲审批",
-  sourcing: "信息源分层",
-  await_source_approval: "等待源草案审批",
-  collecting_and_validating: "采集验证",
-  await_final_source_approval: "等待最终源审批",
-  analyzing: "深度分析",
-  formatting: "排版交付",
-  done: "已完成",
-};
-
+const state = { projects: [], projectId: Lumitrace.selectedProject(), project: null, artifactKey: null, poll: null };
 const $ = (id) => document.getElementById(id);
+const pipelineStages = [
+  ["初始化", ["init"]],
+  ["战略规划", ["planning", "await_outline_approval"]],
+  ["信息源分层", ["sourcing", "await_source_approval"]],
+  ["采集验证", ["collecting_and_validating", "await_final_source_approval"]],
+  ["深度分析", ["analyzing"]],
+  ["排版交付", ["formatting"]],
+  ["完成", ["done"]],
+];
 
-function escapeHtml(text) {
-  return String(text)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+function currentStep(stage) {
+  const index = pipelineStages.findIndex(([, values]) => values.includes(stage));
+  return index < 0 ? 0 : index;
 }
 
-function renderMarkdown(text) {
-  if (!text) return '<div class="empty-state">暂无内容</div>';
-  const blocks = [];
-  let inCode = false;
-  let code = [];
-  let list = [];
-
-  const flushList = () => {
-    if (list.length) {
-      blocks.push(`<ul>${list.map((item) => `<li>${item}</li>`).join("")}</ul>`);
-      list = [];
-    }
-  };
-  const inline = (value) =>
-    escapeHtml(value)
-      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-      .replace(/`([^`]+)`/g, "<code>$1</code>");
-
-  for (const rawLine of text.split("\n")) {
-    const line = rawLine.trimEnd();
-    if (line.startsWith("```")) {
-      if (inCode) {
-        blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
-        code = [];
-        inCode = false;
-      } else {
-        flushList();
-        inCode = true;
-      }
-      continue;
-    }
-    if (inCode) {
-      code.push(rawLine);
-      continue;
-    }
-    if (!line.trim()) {
-      flushList();
-      continue;
-    }
-    if (line.startsWith("# ")) {
-      flushList();
-      blocks.push(`<h1>${inline(line.slice(2))}</h1>`);
-    } else if (line.startsWith("## ")) {
-      flushList();
-      blocks.push(`<h2>${inline(line.slice(3))}</h2>`);
-    } else if (line.startsWith("### ")) {
-      flushList();
-      blocks.push(`<h3>${inline(line.slice(4))}</h3>`);
-    } else if (/^[-*]\s+/.test(line)) {
-      list.push(inline(line.replace(/^[-*]\s+/, "")));
-    } else {
-      flushList();
-      blocks.push(`<p>${inline(line)}</p>`);
-    }
-  }
-  flushList();
-  if (inCode) blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
-  return `<div class="markdown">${blocks.join("")}</div>`;
+function renderPipeline(project) {
+  const active = project ? currentStep(project.stage) : -1;
+  $("pipeline").innerHTML = pipelineStages.map(([label], index) => {
+    const status = index < active ? "complete" : index === active ? "current" : "";
+    const caption = index < active ? "已完成" : index === active ? (project.running ? "进行中" : project.checkpoint ? "待审批" : "当前阶段") : "待开始";
+    return `<div class="pipeline-step ${status}"><span class="step-node">${index < active ? Lumitrace.icon("check", 15) : index + 1}</span><strong>${label}</strong><small>${caption}</small></div>`;
+  }).join("");
 }
 
-async function api(path, options = {}) {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `${res.status} ${res.statusText}`);
-  }
-  return res.json();
-}
-
-function setBusy(isBusy) {
-  $("continueBtn").disabled = isBusy || !state.currentProjectId;
-  $("approveBtn").disabled = isBusy;
-  $("rejectBtn").disabled = isBusy;
-}
-
-async function loadConfig() {
-  const cfg = await api("/api/config");
-  $("configLine").textContent = `${cfg.model} · ${cfg.has_api_key ? "API Key 已配置" : "缺少 API Key"}`;
-}
-
-async function loadProjects() {
-  const data = await api("/api/projects");
-  state.projects = data.projects;
-  renderProjectList();
-  if (!state.currentProjectId && state.projects.length) {
-    state.currentProjectId = state.projects[0].id;
-  }
-  if (state.currentProjectId) await loadProject(state.currentProjectId);
-}
-
-function renderProjectList() {
-  const list = $("projectList");
-  if (!state.projects.length) {
-    list.innerHTML = '<div class="empty-state">暂无项目</div>';
+function renderTimeline(project) {
+  const logs = (project.logs || []).slice(-5).reverse();
+  if (!logs.length) {
+    $("timeline").innerHTML = '<div class="empty compact"><span class="empty-symbol">◇</span><strong>暂无执行记录</strong></div>';
+    $("logList").innerHTML = '<div class="muted">等待 Agent 开始运行……</div>';
     return;
   }
-  list.innerHTML = state.projects
-    .map((project) => {
-      const active = project.id === state.currentProjectId ? " active" : "";
-      const stage = stageLabels[project.stage] || project.stage;
-      const running = project.running ? "运行中" : stage;
-      return `
-        <button class="project-item${active}" type="button" data-project="${project.id}">
-          <strong title="${escapeHtml(project.topic)}">${escapeHtml(project.topic)}</strong>
-          <span class="project-meta"><span>${escapeHtml(running)}</span><span>${project.collect_round}/${project.max_collect_rounds}</span></span>
-        </button>`;
-    })
-    .join("");
-  list.querySelectorAll("[data-project]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      state.currentProjectId = button.dataset.project;
-      state.currentArtifactKey = null;
-      await loadProject(state.currentProjectId);
-      renderProjectList();
-    });
-  });
-}
-
-async function loadProject(projectId) {
-  const project = await api(`/api/projects/${encodeURIComponent(projectId)}`);
-  const stage = stageLabels[project.stage] || project.stage;
-  $("projectTitle").textContent = project.topic;
-  $("stageBadge").textContent = project.running ? `运行中 · ${stage}` : stage;
-  $("continueBtn").disabled = project.running || project.stage === "done";
-  $("roundText").textContent = `${project.collect_round} / ${project.max_collect_rounds}`;
-  const percent =
-    project.max_collect_rounds > 0
-      ? Math.min(100, Math.round((project.collect_round / project.max_collect_rounds) * 100))
-      : 0;
-  $("roundMeter").style.width = `${percent}%`;
-
-  renderCheckpoint(project);
-  renderLogs(project.logs || []);
-  renderArtifacts(project);
-  updateDownloadButton(project);
-
-  if (!state.currentArtifactKey) {
-    const firstExisting = project.artifacts.find((item) => item.exists);
-    state.currentArtifactKey = firstExisting ? firstExisting.key : null;
-  }
-  await loadArtifact(project.id, state.currentArtifactKey);
-  setBusy(project.running);
+  $("timeline").innerHTML = logs.map((log, index) => `<div class="timeline-row"><time>${Lumitrace.escapeHtml(log.time)}</time><p>${Lumitrace.escapeHtml(log.message)}</p><span class="status-pill ${index === 0 && project.running ? "" : "success"}"><i class="status-dot ${index === 0 && project.running ? "running" : "success"}"></i>${index === 0 && project.running ? "运行中" : "已记录"}</span></div>`).join("");
+  $("logList").innerHTML = (project.logs || []).slice().reverse().map((log) => `<div class="log-row"><time>${Lumitrace.escapeHtml(log.time)}</time><span>${Lumitrace.escapeHtml(log.message)}</span></div>`).join("");
 }
 
 function renderCheckpoint(project) {
   const panel = $("checkpointPanel");
-  if (!project.checkpoint) {
-    panel.classList.add("hidden");
-    return;
-  }
-  panel.classList.remove("hidden");
-  $("checkpointTitle").textContent = project.checkpoint.title;
-  if (!state.currentArtifactKey) state.currentArtifactKey = project.checkpoint.key;
+  panel.classList.toggle("hidden", !project.checkpoint);
+  if (!project.checkpoint) return;
+  $("checkpointTitle").textContent = `${project.checkpoint.title}审批`;
+  $("checkpointName").textContent = project.checkpoint.title;
+  if (!state.artifactKey) state.artifactKey = project.checkpoint.key;
 }
 
-function renderLogs(logs) {
-  const list = $("logList");
-  if (!logs.length) {
-    list.innerHTML = '<div class="empty-state">暂无日志</div>';
-    return;
-  }
-  list.innerHTML = logs
-    .slice()
-    .reverse()
-    .map(
-      (row) =>
-        `<div class="log-row"><span>${escapeHtml(row.time)}</span><span>${escapeHtml(row.message)}</span></div>`,
-    )
-    .join("");
+function previewableArtifacts(project) {
+  return project.artifacts.filter((artifact) => artifact.key !== "final_report_typeset_pdf");
 }
 
 function renderArtifacts(project) {
-  const tabs = $("artifactTabs");
-  if (!project.artifacts.length) {
-    tabs.innerHTML = "";
+  const artifacts = previewableArtifacts(project);
+  if (!state.artifactKey || !artifacts.some((item) => item.key === state.artifactKey)) {
+    state.artifactKey = project.checkpoint?.key || artifacts.find((item) => item.exists)?.key || artifacts[0]?.key || null;
+  }
+  $("artifactTabs").innerHTML = artifacts.map((artifact) => `<button class="artifact-tab${artifact.key === state.artifactKey ? " active" : ""}${artifact.exists ? "" : " missing"}" type="button" data-artifact="${artifact.key}">${Lumitrace.icon("file", 15)}<span>${Lumitrace.escapeHtml(artifact.label)}</span></button>`).join("");
+  $("artifactTabs").querySelectorAll("[data-artifact]").forEach((button) => button.addEventListener("click", () => {
+    state.artifactKey = button.dataset.artifact;
+    renderArtifacts(project);
+    loadArtifact();
+  }));
+}
+
+function updateDownloads(project) {
+  const exists = (key) => project.artifacts.some((item) => item.key === key && item.exists);
+  $("downloadPdfBtn").disabled = !exists("final_report");
+  $("typesetBtn").disabled = !exists("final_report") || project.running;
+  $("downloadTexBtn").disabled = !exists("final_report_tex");
+  $("downloadTypesetPdfBtn").disabled = !exists("final_report_typeset_pdf");
+}
+
+async function loadArtifact() {
+  if (!state.projectId || !state.artifactKey) {
+    $("artifactView").innerHTML = '<div class="empty"><span class="empty-symbol">◇</span><strong>暂无产物</strong></div>';
     return;
   }
-  tabs.innerHTML = project.artifacts
-    .map((artifact) => {
-      const active = artifact.key === state.currentArtifactKey ? " active" : "";
-      const missing = artifact.exists ? "" : " missing";
-      return `<button class="tab${active}${missing}" type="button" data-artifact="${artifact.key}">${escapeHtml(artifact.label)}</button>`;
-    })
-    .join("");
-  tabs.querySelectorAll("[data-artifact]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      state.currentArtifactKey = button.dataset.artifact;
-      renderArtifacts(project);
-      await loadArtifact(project.id, state.currentArtifactKey);
-    });
-  });
-}
-
-function updateDownloadButton(project) {
-  const hasFinalReport = project.artifacts.some(
-    (artifact) => artifact.key === "final_report" && artifact.exists,
-  );
-  const hasTex = project.artifacts.some(
-    (artifact) => artifact.key === "final_report_tex" && artifact.exists,
-  );
-  const hasTypesetPdf = project.artifacts.some(
-    (artifact) => artifact.key === "final_report_typeset_pdf" && artifact.exists,
-  );
-  $("downloadPdfBtn").disabled = !hasFinalReport;
-  $("typesetBtn").disabled = !hasFinalReport || project.running;
-  $("downloadTexBtn").disabled = !hasTex;
-  $("downloadTypesetPdfBtn").disabled = !hasTypesetPdf;
-  $("downloadPdfBtn").title = hasFinalReport ? "下载普通 PDF" : "最终报告生成后可下载";
-  $("typesetBtn").title = hasFinalReport ? "生成 LaTeX 源文件并尝试编译高级 PDF" : "最终报告生成后可排版";
-  $("downloadTexBtn").title = hasTex ? "下载 LaTeX 源文件" : "先执行 LaTeX 排版";
-  $("downloadTypesetPdfBtn").title = hasTypesetPdf ? "下载高级排版 PDF" : "需要本机 LaTeX 编译器";
-}
-
-async function loadArtifact(projectId, key) {
-  if (!projectId || !key) {
-    $("artifactView").innerHTML = '<div class="empty-state">暂无产物</div>';
+  const selected = state.project?.artifacts.find((item) => item.key === state.artifactKey);
+  if (!selected?.exists) {
+    $("artifactView").innerHTML = '<div class="empty"><span class="empty-symbol">◇</span><strong>等待生成</strong><p>该产物将在对应研究阶段完成后出现。</p></div>';
     return;
   }
-  const artifact = await api(
-    `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(key)}`,
-  );
-  $("artifactView").innerHTML = artifact.exists
-    ? renderMarkdown(artifact.content)
-    : '<div class="empty-state">暂无内容</div>';
-}
-
-function downloadFinalReportPdf() {
-  if (!state.currentProjectId) return;
-  const projectId = encodeURIComponent(state.currentProjectId);
-  window.open(`/api/projects/${projectId}/download/final-report.pdf`, "_blank");
-}
-
-async function typesetFinalReport() {
-  if (!state.currentProjectId) return;
-  setBusy(true);
-  $("typesetBtn").textContent = "排版中";
   try {
-    const projectId = encodeURIComponent(state.currentProjectId);
-    const result = await api(`/api/projects/${projectId}/typeset/final-report`, {
-      method: "POST",
-    });
-    await loadProjects();
-    if (result.status === "pdf") {
-      window.open(`/api/projects/${projectId}/download/final-report-typeset.pdf`, "_blank");
-    } else {
-      alert(result.message);
-      window.open(`/api/projects/${projectId}/download/final-report.tex`, "_blank");
-    }
+    const artifact = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/artifacts/${encodeURIComponent(state.artifactKey)}`);
+    $("artifactView").innerHTML = Lumitrace.renderMarkdown(artifact.content);
   } catch (error) {
-    alert(error.message);
-  } finally {
-    $("typesetBtn").textContent = "LaTeX 排版";
-    setBusy(false);
+    $("artifactView").innerHTML = `<div class="empty"><span class="empty-symbol">!</span><strong>内容读取失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p></div>`;
   }
 }
 
-function downloadFinalReportTex() {
-  if (!state.currentProjectId) return;
-  const projectId = encodeURIComponent(state.currentProjectId);
-  window.open(`/api/projects/${projectId}/download/final-report.tex`, "_blank");
+function renderProject(project) {
+  state.project = project;
+  Lumitrace.rememberProject(project.id);
+  $("workspaceEmpty").classList.add("hidden");
+  $("workspaceContent").classList.remove("hidden");
+  $("projectTitle").textContent = project.topic;
+  $("stageText").textContent = Lumitrace.stageLabel(project.stage);
+  const tone = Lumitrace.stageTone(project);
+  const runLabel = project.running ? "运行中" : project.job_status === "error" ? "运行失败" : project.checkpoint ? "等待审批" : project.stage === "done" ? "已完成" : "已暂停";
+  $("runText").innerHTML = `<i class="status-dot ${tone}"></i> ${runLabel}`;
+  $("continueBtn").disabled = project.running || project.stage === "done" || Boolean(project.checkpoint);
+  $("roundBadge").textContent = `第 ${project.collect_round} / ${project.max_collect_rounds} 轮`;
+  renderPipeline(project);
+  renderTimeline(project);
+  renderCheckpoint(project);
+  renderArtifacts(project);
+  updateDownloads(project);
 }
 
-function downloadTypesetPdf() {
-  if (!state.currentProjectId) return;
-  const projectId = encodeURIComponent(state.currentProjectId);
-  window.open(`/api/projects/${projectId}/download/final-report-typeset.pdf`, "_blank");
-}
-
-async function createProject(event) {
-  event.preventDefault();
-  setBusy(true);
-  try {
-    const project = await api("/api/projects", {
-      method: "POST",
-      body: JSON.stringify({
-        topic: $("topicInput").value,
-        brief: $("briefInput").value,
-        max_collect_rounds: Number($("roundInput").value || 3),
-      }),
-    });
-    state.currentProjectId = project.id;
-    state.currentArtifactKey = null;
-    $("createForm").reset();
-    $("roundInput").value = 3;
-    await loadProjects();
-  } catch (error) {
-    alert(error.message);
-  } finally {
-    setBusy(false);
+async function loadProject() {
+  if (!state.projectId) {
+    try {
+      const data = await Lumitrace.api("/api/projects");
+      state.projectId = data.projects[0]?.id || "";
+    } catch (_) { /* empty state below */ }
   }
-}
-
-async function approveProject(approved) {
-  if (!state.currentProjectId) return;
-  setBusy(true);
+  if (!state.projectId) { renderPipeline(null); return; }
   try {
-    await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/approval`, {
-      method: "POST",
-      body: JSON.stringify({
-        approved,
-        feedback: $("feedbackInput").value,
-      }),
-    });
-    $("feedbackInput").value = "";
-    await loadProjects();
+    const project = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}`);
+    renderProject(project);
+    await loadArtifact();
   } catch (error) {
-    alert(error.message);
-  } finally {
-    setBusy(false);
+    $("workspaceEmpty").innerHTML = `<span class="empty-symbol">!</span><strong>项目加载失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p><a class="button secondary" href="/research">返回研究首页</a>`;
+    $("workspaceEmpty").classList.remove("hidden");
+    $("workspaceContent").classList.add("hidden");
   }
 }
 
 async function continueProject() {
-  if (!state.currentProjectId) return;
-  setBusy(true);
+  const button = $("continueBtn");
+  Lumitrace.setButtonBusy(button, true, "启动中");
   try {
-    await api(`/api/projects/${encodeURIComponent(state.currentProjectId)}/continue`, {
-      method: "POST",
-    });
-    await loadProject(state.currentProjectId);
-  } catch (error) {
-    alert(error.message);
-  } finally {
-    setBusy(false);
-  }
+    await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/continue`, { method: "POST" });
+    Lumitrace.toast("研究已继续运行");
+    await loadProject();
+  } catch (error) { Lumitrace.toast(error.message, "danger"); }
+  finally { Lumitrace.setButtonBusy(button, false); }
 }
 
-function startPolling() {
-  if (state.pollHandle) window.clearInterval(state.pollHandle);
-  state.pollHandle = window.setInterval(async () => {
-    try {
-      await loadProjects();
-    } catch (error) {
-      console.warn(error);
-    }
-  }, 3000);
+async function approve(approved) {
+  const button = approved ? $("approveBtn") : $("rejectBtn");
+  Lumitrace.setButtonBusy(button, true, approved ? "提交中" : "驳回中");
+  try {
+    await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/approval`, { method: "POST", body: JSON.stringify({ approved, feedback: $("feedbackInput").value }) });
+    $("feedbackInput").value = "";
+    Lumitrace.toast(approved ? "已通过，研究继续运行" : "已驳回，准备重新执行", approved ? "success" : "warning");
+    await loadProject();
+  } catch (error) { Lumitrace.toast(error.message, "danger"); }
+  finally { Lumitrace.setButtonBusy(button, false); }
 }
 
-$("createForm").addEventListener("submit", createProject);
-$("refreshBtn").addEventListener("click", loadProjects);
+function openDownload(path) { if (state.projectId) window.open(`/api/projects/${encodeURIComponent(state.projectId)}${path}`, "_blank"); }
+
+async function typeset() {
+  const button = $("typesetBtn");
+  Lumitrace.setButtonBusy(button, true, "排版中");
+  try {
+    const result = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/typeset/final-report`, { method: "POST" });
+    Lumitrace.toast(result.message, result.status === "pdf" ? "success" : "warning");
+    await loadProject();
+  } catch (error) { Lumitrace.toast(error.message, "danger"); }
+  finally { Lumitrace.setButtonBusy(button, false); }
+}
+
 $("continueBtn").addEventListener("click", continueProject);
-$("approveBtn").addEventListener("click", () => approveProject(true));
-$("rejectBtn").addEventListener("click", () => approveProject(false));
-$("downloadPdfBtn").addEventListener("click", downloadFinalReportPdf);
-$("typesetBtn").addEventListener("click", typesetFinalReport);
-$("downloadTexBtn").addEventListener("click", downloadFinalReportTex);
-$("downloadTypesetPdfBtn").addEventListener("click", downloadTypesetPdf);
+$("approveBtn").addEventListener("click", () => approve(true));
+$("rejectBtn").addEventListener("click", () => approve(false));
+$("downloadPdfBtn").addEventListener("click", () => openDownload("/download/final-report.pdf"));
+$("typesetBtn").addEventListener("click", typeset);
+$("downloadTexBtn").addEventListener("click", () => openDownload("/download/final-report.tex"));
+$("downloadTypesetPdfBtn").addEventListener("click", () => openDownload("/download/final-report-typeset.pdf"));
 
-loadConfig().catch(console.warn);
-loadProjects().catch(console.warn);
-startPolling();
+loadProject();
+state.poll = window.setInterval(loadProject, 3000);

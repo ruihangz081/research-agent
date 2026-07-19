@@ -31,5 +31,5 @@ async def test_four_source_tools_are_project_scoped(tmp_path: Path, monkeypatch:
     assert read["untrusted_evidence"] is True
     denied = await project_sources.list_project_sources("other-project")
     assert json.loads(denied)["items"] == []
-    assert {"ListProjectSources", "SearchProjectSources", "ReadProjectSource", "InspectSourceEvidence"}.issubset(default_registry._schemas)
+    assert {"ListProjectSources", "SearchProjectSources", "ReadProjectSource", "RecordProjectEvidence", "InspectSourceEvidence"}.issubset(default_registry._schemas)
     repository.close()

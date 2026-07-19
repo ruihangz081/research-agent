@@ -61,7 +61,8 @@ class QualityGate:
                 valid.append(item)
         if invalid_count:
             reasons.append(f"{invalid_count} evidence records have invalid source/version/chunk/excerpt")
-        if any(item.verification_status == VerificationStatus.CONTRADICTED for item in evidence):
+        has_contradiction = any(item.verification_status == VerificationStatus.CONTRADICTED for item in evidence)
+        if has_contradiction:
             reasons.append("contradicted evidence remains unresolved")
         if any(source.status == SourceStatus.NEEDS_REVIEW for source in sources.values()):
             reasons.append("high-severity extraction warning requires human review")
@@ -84,7 +85,9 @@ class QualityGate:
             independent = {other.source_id for other in valid if other.research_question_id == item.research_question_id and other.source_id != item.source_id}
             if not independent and item.source_tier not in {"S", "A"}:
                 reasons.append(f"evidence {item.evidence_id} lacks direct S or independent corroboration")
-        if invalid_count:
+        if not evidence:
+            reasons.append("no evidence records are available")
+        if invalid_count or has_contradiction or not evidence:
             status = QualityStatus.BLOCKED
         elif any(source.status == SourceStatus.NEEDS_REVIEW for source in sources.values()):
             status = QualityStatus.NEEDS_HUMAN_REVIEW

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>项目工作区 · 溯光 Lumitrace</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260719" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <div id="sidebarMount"></div>
+      <main class="main-column">
+        <header class="topbar">
+          <div class="topbar-left">
+            <a class="button ghost small" href="/research">← 返回项目列表</a>
+            <h1 id="projectTitle">项目工作区</h1>
+          </div>
+          <div class="topbar-meta">
+            <span class="topbar-stat"><small>当前阶段</small><strong id="stageText">未选择</strong></span>
+            <span class="topbar-stat"><small>运行状态</small><strong id="runText"><i class="status-dot neutral"></i> 等待选择</strong></span>
+            <button id="continueBtn" class="button primary" type="button" disabled>▶ 继续运行</button>
+          </div>
+        </header>
+
+        <div class="page-content">
+          <section id="pipeline" class="pipeline" aria-label="研究进度"></section>
+          <div id="workspaceEmpty" class="panel empty"><span class="empty-symbol">◇</span><strong>选择一个研究项目</strong><p>从研究首页打开项目，查看 Agent 执行进度与产物。</p><a class="button primary" href="/research">前往研究首页</a></div>
+
+          <div id="workspaceContent" class="workspace-grid hidden">
+            <div class="workspace-stack">
+              <section class="panel">
+                <div class="panel-header"><h2>Agent 执行时间线</h2><span id="roundBadge" class="status-pill">第 0 / 0 轮</span></div>
+                <div class="panel-body">
+                  <div id="timeline" class="timeline"></div>
+                  <details style="margin-top:14px" open>
+                    <summary class="muted" style="cursor:pointer;font-weight:700">实时日志</summary>
+                    <div id="logList" class="log-box" style="margin-top:10px"></div>
+                  </details>
+                </div>
+              </section>
+
+              <section id="checkpointPanel" class="panel checkpoint hidden">
+                <div class="panel-header"><h2 id="checkpointTitle">检查点审批</h2><span class="status-pill warning">待审批</span></div>
+                <div class="panel-body checkpoint-grid">
+                  <div><p class="eyebrow">待审批内容</p><h3 id="checkpointName">—</h3><p class="muted">请在右侧查看对应产物，确认后继续研究流程。</p></div>
+                  <label><span>修改意见（驳回时填写）</span><textarea id="feedbackInput" maxlength="500" placeholder="请输入希望调整的方向……"></textarea></label>
+                </div>
+                <div class="checkpoint-actions" style="padding:0 18px 18px"><button id="rejectBtn" class="button danger" type="button">驳回并重做</button><button id="approveBtn" class="button primary" type="button">通过并继续</button></div>
+              </section>
+            </div>
+
+            <section class="panel">
+              <div class="panel-header"><h2>项目产物</h2><span class="muted">按阶段持续生成</span></div>
+              <div class="artifact-toolbar">
+                <button id="downloadPdfBtn" class="button secondary small" type="button" disabled>普通 PDF</button>
+                <button id="typesetBtn" class="button primary small" type="button" disabled>LaTeX 排版</button>
+                <button id="downloadTexBtn" class="button secondary small" type="button" disabled>下载 TeX</button>
+                <button id="downloadTypesetPdfBtn" class="button secondary small" type="button" disabled>高级 PDF</button>
+              </div>
+              <div class="artifact-layout">
+                <nav id="artifactTabs" class="artifact-tabs" aria-label="项目产物"></nav>
+                <article id="artifactView" class="artifact-content"></article>
+              </div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script src="/static/ui.js?v=20260719"></script>
+    <script src="/static/app.js?v=20260719"></script>
+  </body>
+</html>

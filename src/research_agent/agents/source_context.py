@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING
 
 from .. import config
 from ..sources.api import build_runtime
+from ..sources.citations import render_citation
+from ..sources.enums import VerificationStatus
 
 if TYPE_CHECKING:
     from ..state import ProjectState
@@ -15,6 +17,15 @@ def source_context(state: "ProjectState") -> str:
     project_id = state.project_dir.name
     sources = service.list_sources(project_id)
     summary = "\n".join(f"- {source.source_id} v{source.version}: {source.original_filename} [{source.status.value}]" for source in sources) or "- 当前没有已上传材料"
+    evidence = service.repository.list_evidence(project_id)
+    evidence_lines = []
+    source_lookup = {source.source_id: source for source in sources}
+    for item in evidence:
+        source = source_lookup.get(item.source_id)
+        if source and item.verification_status == VerificationStatus.SUPPORTED:
+            evidence_lines.append(f"- {render_citation(item, source)} {item.claim} | excerpt: {item.excerpt}")
+    evidence_summary = "\n".join(evidence_lines) or "- 当前没有已验证 EvidenceRecord"
+    service.repository.close()
     return f"""
 
 ## Project Source Evidence Contract
@@ -27,4 +38,7 @@ def source_context(state: "ProjectState") -> str:
 
 ## Current Source Inventory
 {summary}
+
+## Deterministic Evidence Catalog
+{evidence_summary}
 """

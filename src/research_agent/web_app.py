@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
 from html import escape
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -16,7 +18,7 @@ from pydantic import BaseModel, Field
 from . import config
 from .agent_loop import AgentOptions, run_agent
 from .agents import analyst, collector, formatter, strategist, validator
-from .llm import LLMClient
+from .llm import ChatMessage, LLMClient
 from .orchestrator import _safe_run
 from .report_layout import (
     FILE_FINAL_REPORT_TEX,
@@ -30,31 +32,141 @@ from .sources.api import build_runtime, create_sources_router
 STATIC_DIR = Path(__file__).parent / "web_static"
 ARTIFACT_LIMIT = 120_000
 FINAL_REPORT_PDF = "05_final_report.pdf"
+HTML_HEADERS = {"Cache-Control": "no-store"}
+ENV_PATH = config.PROJECT_ROOT / ".env"
 
-app = FastAPI(title="Research Agent Web")
+app = FastAPI(title="Lumitrace Web")
 _source_service, _source_queue = build_runtime(config.SOURCE_DATA_DIR)
-app.include_router(create_sources_router(_source_service, _source_queue))
+app.include_router(create_sources_router(_source_service, _source_queue, process_in_background=True))
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/materials", include_in_schema=False)
 async def materials_center() -> FileResponse:
-    return FileResponse(STATIC_DIR / "materials.html")
+    return FileResponse(STATIC_DIR / "materials.html", headers=HTML_HEADERS)
+
+
+@app.get("/workspace", include_in_schema=False)
+async def project_workspace() -> FileResponse:
+    return FileResponse(STATIC_DIR / "workspace.html", headers=HTML_HEADERS)
+
+
+@app.get("/research", include_in_schema=False)
+async def research_home() -> FileResponse:
+    return FileResponse(STATIC_DIR / "research.html", headers=HTML_HEADERS)
+
+
+@app.get("/results", include_in_schema=False)
+async def results_center() -> FileResponse:
+    return FileResponse(STATIC_DIR / "results.html", headers=HTML_HEADERS)
+
+
+@app.get("/settings", include_in_schema=False)
+async def settings_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "settings.html", headers=HTML_HEADERS)
 
 JOBS: dict[str, dict[str, Any]] = {}
 LOCKS: dict[str, asyncio.Lock] = {}
+CONFIG_LOCK = asyncio.Lock()
 
 
 class CreateProjectRequest(BaseModel):
     topic: str
     brief: str = ""
-    max_collect_rounds: int = Field(default=3, ge=1, le=5)
+    max_collect_rounds: int | None = Field(default=None, ge=1, le=5)
+    output_preference: Literal["fast", "balanced", "deep"] | None = None
 
 
 class ApprovalRequest(BaseModel):
     approved: bool
     feedback: str = ""
+
+
+class ModelConfigRequest(BaseModel):
+    base_url: str = Field(min_length=1)
+    api_key: str | None = None
+    model: str = Field(min_length=1)
+    timeout: float = Field(default=120, ge=1, le=600)
+    max_retries: int = Field(default=3, ge=1, le=10)
+    temperature: float = Field(default=0.7, ge=0, le=2)
+
+
+class WorkspaceConfigRequest(BaseModel):
+    default_rounds: int = Field(ge=1, le=5)
+    output_preference: Literal["fast", "balanced", "deep"]
+    projects_dir: str = Field(min_length=1)
+    source_data_dir: str = Field(min_length=1)
+
+
+def _validate_base_url(value: str) -> str:
+    base_url = value.strip().rstrip("/")
+    if not base_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Base URL must start with http:// or https://")
+    return base_url
+
+
+def _format_env_value(value: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9_./:+\-=]*", value):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _write_env_updates(updates: dict[str, str]) -> None:
+    lines = ENV_PATH.read_text(encoding="utf-8").splitlines() if ENV_PATH.exists() else []
+    remaining = dict(updates)
+    output: list[str] = []
+    for line in lines:
+        match = re.match(r"^([A-Z][A-Z0-9_]*)=", line)
+        key = match.group(1) if match else None
+        if key in remaining:
+            output.append(f"{key}={_format_env_value(remaining.pop(key))}")
+        else:
+            output.append(line)
+    if remaining and output and output[-1].strip():
+        output.append("")
+    output.extend(f"{key}={_format_env_value(value)}" for key, value in remaining.items())
+    temp_path = ENV_PATH.with_suffix(".env.tmp")
+    temp_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+    temp_path.replace(ENV_PATH)
+
+
+def _apply_model_config(req: ModelConfigRequest, *, persist: bool) -> dict[str, str]:
+    base_url = _validate_base_url(req.base_url)
+    model = req.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="Model is required")
+    api_key = req.api_key.strip() if req.api_key else config.LLM_API_KEY
+    updates = {
+        "LLM_BASE_URL": base_url,
+        "LLM_MODEL": model,
+        "LLM_TIMEOUT": str(req.timeout),
+        "LLM_MAX_RETRIES": str(req.max_retries),
+        "LLM_TEMPERATURE": str(req.temperature),
+    }
+    if req.api_key and req.api_key.strip():
+        updates["LLM_API_KEY"] = req.api_key.strip()
+    if persist:
+        _write_env_updates(updates)
+        for key, value in updates.items():
+            os.environ[key] = value
+        config.LLM_BASE_URL = base_url
+        config.LLM_API_KEY = api_key
+        config.LLM_MODEL = model
+        config.DEFAULT_MODEL = model
+        config.LLM_TIMEOUT = req.timeout
+        config.LLM_MAX_RETRIES = req.max_retries
+        config.LLM_TEMPERATURE = req.temperature
+    return {"base_url": base_url, "api_key": api_key, "model": model}
+
+
+def _validate_storage_dir(value: str, label: str) -> Path:
+    path = Path(value.strip()).expanduser()
+    if not path.is_absolute():
+        raise HTTPException(status_code=400, detail=f"{label} must be an absolute path")
+    if not path.exists() or not path.is_dir():
+        raise HTTPException(status_code=400, detail=f"{label} must be an existing directory")
+    return path
 
 
 def _project_id(project_dir: Path) -> str:
@@ -556,7 +668,7 @@ def _schedule(project_id: str) -> None:
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers=HTML_HEADERS)
 
 
 @app.get("/api/config")
@@ -565,8 +677,71 @@ async def api_config() -> dict[str, Any]:
         "model": config.LLM_MODEL,
         "base_url": config.LLM_BASE_URL,
         "has_api_key": bool(config.LLM_API_KEY),
+        "timeout": config.LLM_TIMEOUT,
+        "max_retries": config.LLM_MAX_RETRIES,
+        "temperature": config.LLM_TEMPERATURE,
+        "search_provider": config.SEARCH_API_PROVIDER,
+        "has_search_api_key": bool(config.SEARCH_API_KEY),
+        "embedding_model": os.getenv("SOURCE_EMBEDDING_MODEL", ""),
+        "default_rounds": config.MAX_COLLECT_ROUNDS,
+        "output_preference": config.OUTPUT_PREFERENCE,
         "projects_dir": str(config.PROJECTS_DIR),
+        "source_data_dir": os.getenv("SOURCE_DATA_DIR", str(config.SOURCE_DATA_DIR)),
+        "active_source_data_dir": str(config.SOURCE_DATA_DIR),
+        "source_restart_required": Path(
+            os.getenv("SOURCE_DATA_DIR", str(config.SOURCE_DATA_DIR))
+        ).expanduser() != config.SOURCE_DATA_DIR,
     }
+
+
+@app.put("/api/config/model")
+async def api_update_model_config(req: ModelConfigRequest) -> dict[str, Any]:
+    async with CONFIG_LOCK:
+        _apply_model_config(req, persist=True)
+    return await api_config()
+
+
+@app.put("/api/config/workspace")
+async def api_update_workspace_config(req: WorkspaceConfigRequest) -> dict[str, Any]:
+    projects_dir = _validate_storage_dir(req.projects_dir, "Projects directory")
+    source_data_dir = _validate_storage_dir(req.source_data_dir, "Source directory")
+    updates = {
+        "MAX_COLLECT_ROUNDS": str(req.default_rounds),
+        "OUTPUT_PREFERENCE": req.output_preference,
+        "PROJECTS_DIR": str(projects_dir),
+        "SOURCE_DATA_DIR": str(source_data_dir),
+    }
+    async with CONFIG_LOCK:
+        _write_env_updates(updates)
+        for key, value in updates.items():
+            os.environ[key] = value
+        config.MAX_COLLECT_ROUNDS = req.default_rounds
+        config.OUTPUT_PREFERENCE = req.output_preference
+        config.PROJECTS_DIR = projects_dir
+    return await api_config()
+
+
+@app.post("/api/config/model/test")
+async def api_test_model_config(req: ModelConfigRequest) -> dict[str, Any]:
+    values = _apply_model_config(req, persist=False)
+    if not values["api_key"]:
+        raise HTTPException(status_code=400, detail="API Key is required")
+    try:
+        async with LLMClient(
+            base_url=values["base_url"],
+            api_key=values["api_key"],
+            model=values["model"],
+            timeout=min(req.timeout, 30),
+            max_retries=1,
+        ) as client:
+            response = await client.chat(
+                [ChatMessage(role="user", content="Reply with OK.")],
+                temperature=0,
+                max_tokens=4,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Connection failed: {exc}") from exc
+    return {"ok": True, "message": "连接成功", "response": response.content or ""}
 
 
 @app.get("/api/projects")
@@ -590,7 +765,8 @@ async def api_create_project(req: CreateProjectRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Topic is required")
 
     state = ProjectState(topic=topic, date_str=datetime.now().strftime("%Y%m%d_%H%M%S"))
-    state.max_collect_rounds = req.max_collect_rounds
+    state.max_collect_rounds = req.max_collect_rounds or config.MAX_COLLECT_ROUNDS
+    state.notes["output_preference"] = req.output_preference or config.OUTPUT_PREFERENCE
     if req.brief.strip():
         state.notes["web_brief"] = req.brief.strip()
     state.save()

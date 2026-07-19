@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .enums import JobStatus, SourceStatus
 from .models import AuditEvent, EvidenceRecord, Job, SourceAsset, SourceChunk, SourceDocument
@@ -24,6 +25,8 @@ CREATE TABLE IF NOT EXISTS documents (source_id TEXT PRIMARY KEY, payload TEXT N
 CREATE TABLE IF NOT EXISTS chunks (chunk_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, payload TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(chunk_id UNINDEXED, source_id UNINDEXED, text);
+CREATE TABLE IF NOT EXISTS chunk_embeddings (chunk_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, model TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_source ON chunk_embeddings(source_id, model);
 CREATE TABLE IF NOT EXISTS evidence (evidence_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, source_id TEXT NOT NULL, payload TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_evidence_project ON evidence(project_id, source_id);
 CREATE TABLE IF NOT EXISTS jobs (job_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, status TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -46,6 +49,17 @@ class SQLiteRepository:
     def close(self) -> None:
         self._connection.close()
 
+    def backup_to(self, destination: str | Path) -> Path:
+        destination = Path(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        target = sqlite3.connect(destination)
+        try:
+            with self._lock:
+                self._connection.backup(target)
+        finally:
+            target.close()
+        return destination
+
     def put_source(self, source: SourceAsset) -> bool:
         with self._lock, self._connection:
             try:
@@ -66,6 +80,24 @@ class SQLiteRepository:
                 (source.logical_source_id, source.version, source.sha256, source.status.value, int(source.enabled),
                  source.model_dump_json(), source.updated_at.isoformat(), source.source_id),
             )
+
+    def mutate_source(self, source_id: str, project_id: str, mutator: Callable[[SourceAsset], None]) -> SourceAsset:
+        """Apply a source mutation atomically against the latest persisted payload."""
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT payload FROM sources WHERE source_id=? AND project_id=?",
+                (source_id, project_id),
+            ).fetchone()
+            if not row:
+                raise KeyError("source not found in project")
+            source = SourceAsset.model_validate_json(row[0])
+            mutator(source)
+            self._connection.execute(
+                "UPDATE sources SET logical_source_id=?, version=?, sha256=?, status=?, enabled=?, payload=?, updated_at=? WHERE source_id=? AND project_id=?",
+                (source.logical_source_id, source.version, source.sha256, source.status.value, int(source.enabled),
+                 source.model_dump_json(), source.updated_at.isoformat(), source.source_id, project_id),
+            )
+            return source
 
     def get_source(self, source_id: str, project_id: str | None = None) -> SourceAsset | None:
         query = "SELECT payload FROM sources WHERE source_id=?"
@@ -106,11 +138,32 @@ class SQLiteRepository:
     def replace_chunks(self, source_id: str, chunks: Iterable[SourceChunk]) -> None:
         chunks = list(chunks)
         with self._lock, self._connection:
+            self._connection.execute("DELETE FROM chunk_embeddings WHERE source_id=?", (source_id,))
             self._connection.execute("DELETE FROM chunks_fts WHERE source_id=?", (source_id,))
             self._connection.execute("DELETE FROM chunks WHERE source_id=?", (source_id,))
             for chunk in chunks:
                 self._connection.execute("INSERT INTO chunks VALUES (?, ?, ?)", (chunk.chunk_id, source_id, chunk.model_dump_json()))
                 self._connection.execute("INSERT INTO chunks_fts VALUES (?, ?, ?)", (chunk.chunk_id, source_id, chunk.text))
+
+    def put_chunk_embeddings(self, chunks: list[SourceChunk], model: str, vectors: list[list[float]]) -> None:
+        if len(chunks) != len(vectors):
+            raise ValueError("embedding count does not match chunks")
+        with self._lock, self._connection:
+            for chunk, vector in zip(chunks, vectors):
+                self._connection.execute(
+                    "INSERT OR REPLACE INTO chunk_embeddings VALUES (?, ?, ?, ?)",
+                    (chunk.chunk_id, chunk.source_id, model, json.dumps(vector, separators=(",", ":"))),
+                )
+
+    def get_chunk_embeddings(self, chunk_ids: list[str], model: str) -> dict[str, list[float]]:
+        if not chunk_ids:
+            return {}
+        placeholders = ",".join("?" for _ in chunk_ids)
+        rows = self._connection.execute(
+            f"SELECT chunk_id, payload FROM chunk_embeddings WHERE model=? AND chunk_id IN ({placeholders})",
+            [model, *chunk_ids],
+        )
+        return {row[0]: json.loads(row[1]) for row in rows}
 
     def get_chunk(self, chunk_id: str, project_id: str | None = None) -> SourceChunk | None:
         row = self._connection.execute("SELECT payload FROM chunks WHERE chunk_id=?", (chunk_id,)).fetchone()
@@ -165,15 +218,26 @@ class SQLiteRepository:
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
-                row = self._connection.execute("SELECT payload FROM jobs WHERE status=? ORDER BY updated_at LIMIT 1", (JobStatus.QUEUED.value,)).fetchone()
-                if not row:
+                rows = self._connection.execute(
+                    "SELECT payload FROM jobs WHERE status=? ORDER BY updated_at",
+                    (JobStatus.QUEUED.value,),
+                ).fetchall()
+                now = datetime.now(timezone.utc)
+                job = next(
+                    (
+                        candidate
+                        for candidate in (Job.model_validate_json(row[0]) for row in rows)
+                        if candidate.next_attempt_at is None or candidate.next_attempt_at <= now
+                    ),
+                    None,
+                )
+                if job is None:
                     self._connection.commit()
                     return None
-                job = Job.model_validate_json(row[0])
-                now = datetime.now(timezone.utc)
                 job.status = JobStatus.RUNNING
                 job.worker_id = worker_id
                 job.attempts += 1
+                job.next_attempt_at = None
                 job.started_at = job.started_at or now
                 job.heartbeat_at = now
                 self._connection.execute("UPDATE jobs SET status=?, payload=?, updated_at=? WHERE job_id=?",

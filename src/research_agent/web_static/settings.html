@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>设置 · 溯光 Lumitrace</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260724" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <div id="sidebarMount"></div>
+      <main class="main-column">
+        <header class="topbar"><div class="topbar-left"><h1>设置</h1></div><div class="topbar-actions"><a class="button primary" href="/research?new=1">→ 开始调研</a></div></header>
+        <div class="page-content">
+          <section class="page-heading"><div><h1>设置</h1><p>查看系统模型、搜索与嵌入、默认值和本地存储配置。</p></div></section>
+          <div class="settings-layout">
+            <div class="settings-stack">
+              <section class="panel settings-section">
+                <div class="settings-title"><span class="settings-index">1</span><div><h2>模型与 API</h2><p>当前后端模型服务与访问参数</p></div></div>
+                <div class="field-grid">
+                  <label><span>模型服务商</span><input id="provider" value="OpenAI Compatible" readonly /></label>
+                  <label><span>Base URL</span><input id="baseUrl" required placeholder="https://api.openai.com/v1" /></label>
+                  <label><span>API Key</span><input id="apiKey" type="password" autocomplete="off" placeholder="留空则保留当前 API Key" /></label>
+                  <label><span>模型选择</span><input id="model" required placeholder="gpt-4o" /></label>
+                  <label><span>超时时间（秒）</span><input id="timeout" type="number" min="1" max="600" required /></label>
+                  <label><span>重试次数</span><input id="retries" type="number" min="1" max="10" required /></label>
+                  <div class="field-control"><div class="field-label">温度 <button class="info-tip" type="button" aria-label="查看温度说明" data-tip="控制模型输出的随机性。0–0.2 最稳定，0.2–0.5 适合行业调研，0.6 以上表达更活跃但不确定性更高。">i</button></div><input id="temperature" aria-label="温度" aria-describedby="temperatureHelp" type="number" min="0" max="2" step="0.1" required /><small id="temperatureHelp" class="field-help">越低越稳定严谨，越高越发散；行业调研建议 0.2–0.5。</small></div>
+                </div>
+                <div class="settings-actions"><span class="muted">保存后会写入本地 <code>.env</code>，并立即用于后续调研任务。</span><div class="inline"><button id="testConnection" class="button secondary" type="button">测试连接</button><button id="saveModel" class="button primary" type="button">保存模型配置</button></div></div>
+              </section>
+
+              <section class="panel settings-section">
+                <div class="settings-title"><span class="settings-index">2</span><div><h2>搜索与 Embedding</h2><p>搜索服务和语义检索状态</p></div></div>
+                <div class="field-grid">
+                  <label><span>搜索服务商</span><input id="searchProvider" readonly /></label>
+                  <label><span>搜索 API Key</span><input id="searchKey" readonly /></label>
+                  <label><span>Embedding 模型</span><input id="embeddingModel" readonly /></label>
+                  <label><span>Embedding 状态</span><input id="embeddingStatus" readonly /></label>
+                </div>
+              </section>
+
+              <section class="panel settings-section">
+                <div class="settings-title"><span class="settings-index">3</span><div><h2>调研默认值</h2><p>新建调研时使用的默认参数</p></div></div>
+                <div class="field-grid">
+                  <label><span>默认采集验证轮数</span><select id="defaultRounds"><option value="1">1 轮</option><option value="2">2 轮</option><option value="3">3 轮</option><option value="4">4 轮</option><option value="5">5 轮</option></select><small class="field-help">新建调研时会默认选中该轮数，仍可在创建时单独调整。</small></label>
+                  <label><span>输出偏好</span><select id="outputPreference"><option value="fast">快速（摘要和结论优先）</option><option value="balanced">平衡（速度与深度兼顾）</option><option value="deep">深度（论证和证据优先）</option></select><small class="field-help">会影响最终报告的篇幅、论证深度和证据展开方式。</small></label>
+                </div>
+              </section>
+
+              <section class="panel settings-section">
+                <div class="settings-title"><span class="settings-index">4</span><div><h2>本地存储</h2><p>项目与材料的存储目录</p></div></div>
+                <div class="field-grid">
+                  <label><span>项目目录</span><input id="projectsDir" required /><small class="field-help">请选择已存在的绝对路径；保存后新项目立即写入该目录。</small></label>
+                  <label><span>材料目录</span><input id="sourceDir" required /><small class="field-help">请选择已存在的绝对路径；修改后需重启本地服务才能切换材料库。</small></label>
+                </div>
+                <div class="settings-actions"><span class="muted">默认值和路径会保存到本地 <code>.env</code>。</span><button id="saveWorkspace" class="button primary" type="button">保存调研与存储设置</button></div>
+              </section>
+            </div>
+
+            <aside class="workspace-stack">
+              <section class="panel panel-body"><p class="eyebrow">配置方式</p><h3 style="margin:0 0 12px">由本地服务安全保存</h3><div class="read-only-note">API Key 只提交到本机服务并写入被 Git 忽略的 <code>.env</code> 文件。页面只显示是否已配置，不会从后端读取明文 Key。</div><button id="copyEnv" class="button secondary" type="button" style="width:100%;margin-top:14px">复制配置模板</button></section>
+              <section class="panel panel-body"><p class="eyebrow">配置状态</p><div id="configStatus" class="detail-list"></div></section>
+            </aside>
+          </div>
+        </div>
+      </main>
+    </div>
+    <script src="/static/ui.js?v=20260724"></script>
+    <script src="/static/settings.js?v=20260724"></script>
+  </body>
+</html>

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>研究首页 · 溯光 Lumitrace</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260721" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <div id="sidebarMount"></div>
+      <main class="main-column">
+        <header class="topbar">
+          <div class="topbar-left"><h1>研究空间</h1></div>
+          <div class="topbar-actions">
+            <div class="search-box">
+              <span id="topSearchIcon"></span>
+              <input id="projectSearch" type="search" placeholder="搜索项目名称或关键词" />
+            </div>
+            <button id="openCreate" class="button primary" type="button"><span id="newIcon"></span>新建调研</button>
+          </div>
+        </header>
+
+        <div class="page-content home-layout">
+          <section class="page-heading">
+            <div>
+              <h1>研究任务 <span class="heading-spark">✦</span></h1>
+              <p>统一管理调研项目，跟踪每一轮智能采集与分析。</p>
+            </div>
+            <div id="filterTabs" class="filter-tabs" aria-label="项目状态筛选">
+              <button class="filter-tab active" data-filter="all">全部</button>
+              <button class="filter-tab" data-filter="running">运行中</button>
+              <button class="filter-tab" data-filter="approval">待审批</button>
+              <button class="filter-tab" data-filter="done">已完成</button>
+              <button class="filter-tab" data-filter="failed">失败</button>
+            </div>
+          </section>
+
+          <section id="summaryStrip" class="summary-strip" aria-label="研究概览"></section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>全部研究</h2>
+              <button id="refreshProjects" class="icon-button" type="button" title="刷新"></button>
+            </div>
+            <div id="projectTable" class="table-scroll"></div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <div id="createDrawer" class="drawer-backdrop create-modal-backdrop" aria-hidden="true">
+      <aside class="drawer create-modal" role="dialog" aria-modal="true" aria-labelledby="createTitle">
+        <div class="drawer-header">
+          <div><h2 id="createTitle">新建调研</h2><p class="muted">定义研究主题、重点和验证深度。</p></div>
+          <button id="closeCreate" class="icon-button" type="button" aria-label="关闭"></button>
+        </div>
+        <form id="createForm" class="drawer-form">
+          <label><span>调研主题 *</span><input id="topicInput" maxlength="100" required placeholder="例如：生成式 AI 在教育行业的应用研究" /></label>
+          <label><span>补充要求</span><textarea id="briefInput" maxlength="500" placeholder="补充说明调研背景、关注重点、期望结论（选填）"></textarea></label>
+          <label><span>采集验证轮数 *</span><input id="roundInput" type="hidden" value="3" /><div id="roundPicker" class="round-picker"></div><small class="muted">轮数越多，验证越充分，报告越可靠。</small></label>
+          <div class="drawer-actions"><button id="cancelCreate" class="button secondary" type="button">取消</button><button id="submitCreate" class="button primary" type="submit">创建研究</button></div>
+        </form>
+      </aside>
+    </div>
+
+    <script src="/static/ui.js?v=20260719"></script>
+    <script src="/static/home.js?v=20260722"></script>
+  </body>
+</html>

@@ -108,3 +108,13 @@ def test_parser_output_is_stored_as_derived_layer(tmp_path: Path) -> None:
     assert service.get_source("project", result.source.source_id).status.value == "ready"
     assert repository.get_document(result.source.source_id, "project") is not None
     repository.close()
+
+
+def test_text_duplicate_lines_keep_distinct_offsets() -> None:
+    document = parse_bytes("text", b"alpha\nbeta\nalpha", "repeat.txt").document
+    assert [(block.locator.char_start, block.locator.char_end) for block in document.blocks] == [(0, 5), (6, 10), (11, 16)]
+
+
+def test_csv_range_supports_more_than_twenty_six_columns() -> None:
+    document = parse_bytes("wide", (",".join(str(value) for value in range(30))).encode(), "wide.csv").document
+    assert document.tables[0].locator.cell_range == "A1:AD1"

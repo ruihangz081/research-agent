@@ -1,7 +1,6 @@
 """Project-scoped keyword and semantic hybrid retrieval."""
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 from collections import Counter, defaultdict
@@ -10,6 +9,52 @@ from dataclasses import dataclass
 from .enums import SourceStatus
 from .models import SearchResult, SourceAsset, SourceChunk
 from .repository import SQLiteRepository
+from .embeddings import EmbeddingProvider, configured_provider, cosine
+
+
+_ALIASES = {
+    "revenue": {"revenue", "sales", "收入", "营收", "营业收入", "销售额"},
+    "annual": {"annual", "yearly", "年度", "全年"},
+    "usd": {"usd", "dollar", "dollars", "美元"},
+}
+_CHINESE_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CHINESE_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10_000, "亿": 100_000_000}
+
+
+def _chinese_integer(value: str) -> int:
+    total = section = number = 0
+    for char in value:
+        if char in _CHINESE_DIGITS:
+            number = _CHINESE_DIGITS[char]
+            continue
+        unit = _CHINESE_UNITS.get(char)
+        if unit is None:
+            continue
+        if unit < 10_000:
+            section += (number or 1) * unit
+        else:
+            section = (section + number) * unit
+            total += section
+            section = 0
+        number = 0
+    return total + section + number
+
+
+def _numeric_tokens(text: str) -> list[str]:
+    normalized = text.casefold().replace(",", "")
+    tokens: list[str] = []
+    for raw, suffix in re.findall(r"(\d+(?:\.\d+)?)\s*(m|million|万|亿)?", normalized):
+        number = float(raw)
+        multiplier = {"m": 1_000_000, "million": 1_000_000, "万": 10_000, "亿": 100_000_000}.get(suffix, 1)
+        absolute = number * multiplier
+        if absolute >= 1_000_000:
+            absolute_token = str(int(absolute)) if absolute.is_integer() else f"{absolute:.6f}".rstrip("0").rstrip(".")
+            tokens.extend([absolute_token, f"{absolute / 1_000_000:g}m"])
+    for raw in re.findall(r"[零〇一二两三四五六七八九十百千万亿]+", text):
+        absolute = _chinese_integer(raw)
+        if absolute >= 1_000_000:
+            tokens.extend([str(absolute), f"{absolute / 1_000_000:g}m"])
+    return tokens
 
 
 def _terms(text: str) -> list[str]:
@@ -17,21 +62,11 @@ def _terms(text: str) -> list[str]:
     words = re.findall(r"[a-z0-9_]+|[一-鿿]", lowered)
     chinese = "".join(re.findall(r"[一-鿿]", lowered))
     words.extend(chinese[index:index + 2] for index in range(max(0, len(chinese) - 1)))
+    for canonical, aliases in _ALIASES.items():
+        if any(alias in lowered for alias in aliases):
+            words.append(canonical)
+    words.extend(_numeric_tokens(text))
     return words
-
-
-def _vector(text: str, dimensions: int = 384) -> dict[int, float]:
-    counts: dict[int, float] = defaultdict(float)
-    terms = _terms(text)
-    for term in terms:
-        bucket = int.from_bytes(hashlib.blake2b(term.encode(), digest_size=4).digest(), "big") % dimensions
-        counts[bucket] += 1.0
-    norm = math.sqrt(sum(value * value for value in counts.values())) or 1.0
-    return {key: value / norm for key, value in counts.items()}
-
-
-def _cosine(left: dict[int, float], right: dict[int, float]) -> float:
-    return sum(value * right.get(key, 0.0) for key, value in left.items())
 
 
 @dataclass(frozen=True)
@@ -43,8 +78,9 @@ class SearchFilters:
 
 
 class HybridSearchIndex:
-    def __init__(self, repository: SQLiteRepository):
+    def __init__(self, repository: SQLiteRepository, embedding_provider: EmbeddingProvider | None = None):
         self.repository = repository
+        self.embedding_provider = embedding_provider if embedding_provider is not None else configured_provider()
 
     def search(self, project_id: str, query: str, *, limit: int = 10, filters: SearchFilters | None = None,
                adjacent: int = 1) -> list[SearchResult]:
@@ -53,7 +89,6 @@ class HybridSearchIndex:
         if not query_terms:
             return []
         query_counts = Counter(query_terms)
-        query_vector = _vector(query)
         sources = {source.source_id: source for source in self.repository.list_sources(project_id, include_superseded=True)}
         eligible: dict[str, SourceAsset] = {}
         for source_id, source in sources.items():
@@ -76,6 +111,16 @@ class HybridSearchIndex:
             tokenized[chunk.chunk_id] = counts
             document_frequency.update(counts.keys())
         average_length = sum(sum(counts.values()) for counts in tokenized.values()) / len(tokenized)
+        semantic_scores: dict[str, float] = {}
+        if self.embedding_provider:
+            query_vector = self.embedding_provider.embed([query])[0]
+            stored = self.repository.get_chunk_embeddings([chunk.chunk_id for chunk in chunks], self.embedding_provider.model_name)
+            missing = [chunk for chunk in chunks if chunk.chunk_id not in stored]
+            if missing:
+                generated = self.embedding_provider.embed([chunk.text for chunk in missing])
+                self.repository.put_chunk_embeddings(missing, self.embedding_provider.model_name, generated)
+                stored.update({chunk.chunk_id: vector for chunk, vector in zip(missing, generated)})
+            semantic_scores = {chunk.chunk_id: max(0.0, cosine(query_vector, stored[chunk.chunk_id])) for chunk in chunks}
         results: list[SearchResult] = []
         for chunk in chunks:
             counts = tokenized[chunk.chunk_id]
@@ -87,11 +132,15 @@ class HybridSearchIndex:
                     continue
                 inverse = math.log(1 + (len(chunks) - document_frequency[term] + 0.5) / (document_frequency[term] + 0.5))
                 keyword_score += query_weight * inverse * frequency * 2.2 / (frequency + 1.2 * (0.25 + 0.75 * length / max(average_length, 1)))
-            semantic_score = _cosine(query_vector, _vector(chunk.text))
+            semantic_score = semantic_scores.get(chunk.chunk_id, 0.0)
+            matched_terms = sum(weight for term, weight in query_counts.items() if counts[term])
+            coverage_bonus = 0.15 * matched_terms / max(sum(query_counts.values()), 1)
             phrase_bonus = 0.2 if query.casefold() in chunk.text.casefold() else 0
             heading_bonus = 0.08 if any(term in _terms(" ".join(chunk.heading_path)) for term in query_terms) else 0
             tier_bonus = {"S": 0.06, "A": 0.04, "B": 0.02}.get(eligible[chunk.source_id].source_tier, 0)
-            score = 0.55 * min(keyword_score, 1.0) + 0.35 * semantic_score + phrase_bonus + heading_bonus + tier_bonus
+            semantic_weight = 0.35 if self.embedding_provider else 0.0
+            keyword_weight = 0.55 if self.embedding_provider else 0.90
+            score = keyword_weight * min(keyword_score, 1.0) + semantic_weight * semantic_score + coverage_bonus + phrase_bonus + heading_bonus + tier_bonus
             if score > 0:
                 results.append(SearchResult(chunk=chunk, source=eligible[chunk.source_id], score=score,
                                             keyword_score=keyword_score, semantic_score=semantic_score,

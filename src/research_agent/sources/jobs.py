@@ -91,6 +91,7 @@ class SourceWorker:
                 document = self.repository.get_document(job.source_id, job.project_id)
                 if document is None:
                     self.service.parse_source(job.project_id, job.source_id, actor=self.worker_id)
+                self.service.index_source(job.project_id, job.source_id, actor=self.worker_id)
             self._check_cancel(job)
             job.status = JobStatus.SUCCEEDED
             job.progress = 100
@@ -106,7 +107,7 @@ class SourceWorker:
             job.heartbeat_at = utcnow()
             if job.attempts < job.max_attempts:
                 job.status = JobStatus.QUEUED
-                # Exponential retry time is represented by updated_at ordering and worker polling.
+                job.next_attempt_at = utcnow() + timedelta(seconds=2 ** max(job.attempts - 1, 0))
             else:
                 job.status = JobStatus.FAILED
                 job.finished_at = utcnow()

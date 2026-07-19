@@ -61,3 +61,15 @@ def test_queued_job_can_be_cancelled_with_project_boundary(tmp_path: Path) -> No
         raise AssertionError("cross-project cancellation was accepted")
     assert SourceWorker(service).run_once() is None
     repository.close()
+
+
+def test_rebuild_index_recreates_missing_chunks(tmp_path: Path) -> None:
+    repository, service, queue = build(tmp_path)
+    source = service.register_bytes("project", "report.txt", b"rebuild this evidence").source
+    service.parse_source("project", source.source_id)
+    assert repository.all_chunks("project") == []
+    job = queue.enqueue("project", "rebuild_index", "rebuild:actual", source.source_id)
+    SourceWorker(service).run_once()
+    assert repository.get_job(job.job_id).status == JobStatus.SUCCEEDED
+    assert repository.all_chunks("project")
+    repository.close()

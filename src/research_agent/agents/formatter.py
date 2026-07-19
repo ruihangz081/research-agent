@@ -14,6 +14,10 @@ from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
 from ..report_layout import generate_typeset_artifacts
+from ..sources.api import build_runtime
+from ..sources.citations import render_citation, validate_report_citations
+from ..sources.enums import VerificationStatus
+from ..sources.quality import ResearchRequirement
 from ..tools import default_registry
 from .source_context import source_context
 
@@ -23,6 +27,34 @@ if TYPE_CHECKING:
 console = Console()
 
 _PROMPT_FORMATTER = Path(__file__).parent / "prompts" / "formatter.md"
+
+
+def _finalize_evidence_appendix(state: "ProjectState", report_path: Path) -> None:
+    service, _ = build_runtime(config.SOURCE_DATA_DIR)
+    project_id = state.project_dir.name
+    evidence = service.repository.list_evidence(project_id)
+    supported = [item for item in evidence if item.verification_status == VerificationStatus.SUPPORTED]
+    requirements = [ResearchRequirement(question_id=value) for value in sorted({item.research_question_id for item in supported})]
+    gate = service.quality_gate(project_id, requirements)
+    state.notes["quality_gate"] = gate.status.value
+    state.notes["quality_gate_reasons"] = gate.reasons
+    sources = {source.source_id: source for source in service.list_sources(project_id, include_superseded=True)}
+    valid, errors = validate_report_citations(supported, sources)
+    service.repository.close()
+    if not gate.passed:
+        state.save()
+        raise RuntimeError(f"quality gate blocked final delivery: {gate.status.value}: {gate.reasons}")
+    if not valid:
+        raise RuntimeError(f"citation audit failed: {errors}")
+    report = report_path.read_text(encoding="utf-8")
+    appendix = ["", "---", "", "## 可追溯证据索引", ""]
+    for item in supported:
+        citation = render_citation(item, sources[item.source_id])
+        appendix.append(f"- {citation} **{item.claim}** — {item.excerpt}")
+    marker = "## 可追溯证据索引"
+    if marker in report:
+        report = report.split(marker, 1)[0].rstrip()
+    report_path.write_text(report.rstrip() + "\n" + "\n".join(appendix) + "\n", encoding="utf-8")
 
 
 def _load_formatter_prompt() -> str:
@@ -69,6 +101,16 @@ async def run_formatting(state: "ProjectState") -> Path:
         f"- 验证报告：`{validation_report_path}`\n"
         f"- 最终报告输出路径：`{final_report_path}`\n"
     )
+    output_preference = state.notes.get("output_preference", config.OUTPUT_PREFERENCE)
+    preference_instructions = {
+        "fast": "精简优先：突出摘要、关键证据和可执行结论，避免重复展开。",
+        "balanced": "平衡优先：兼顾阅读效率、分析深度与证据完整性。",
+        "deep": "深度优先：充分展开论证、反方证据、限制条件和来源细节。",
+    }
+    system_prompt += (
+        f"- 输出偏好：{output_preference}\n"
+        f"- 写作要求：{preference_instructions.get(output_preference, preference_instructions['balanced'])}\n"
+    )
 
     options = AgentOptions(
         system_prompt=system_prompt,
@@ -108,6 +150,8 @@ async def run_formatting(state: "ProjectState") -> Path:
 
     if not final_report_path.exists():
         raise RuntimeError(f"Agent5 未能生成最终报告：{final_report_path}")
+
+    _finalize_evidence_appendix(state, final_report_path)
 
     console.print(f"\n[green]✓ 最终报告已生成：{final_report_path.name}[/green]")
 

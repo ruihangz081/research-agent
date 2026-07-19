@@ -65,8 +65,15 @@ def sha256_stream(stream: BinaryIO, block_size: int = 1024 * 1024) -> tuple[str,
 def inspect_zip(data: bytes, max_members: int = 1000, max_uncompressed: int = 512 * 1024 * 1024) -> list[str]:
     """Reject traversal and zip bombs before extracting any member."""
     import io
+    return inspect_zip_stream(io.BytesIO(data), max_members=max_members, max_uncompressed=max_uncompressed)
+
+
+def inspect_zip_stream(stream: BinaryIO, max_members: int = 1000, max_uncompressed: int = 512 * 1024 * 1024) -> list[str]:
+    """Validate a seekable ZIP stream and restore its original position."""
+    position = stream.tell()
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        stream.seek(0)
+        with zipfile.ZipFile(stream) as archive:
             members = archive.infolist()
             if len(members) > max_members:
                 raise SourceSecurityError("archive has too many members")
@@ -84,6 +91,8 @@ def inspect_zip(data: bytes, max_members: int = 1000, max_uncompressed: int = 51
             return names
     except zipfile.BadZipFile as exc:
         raise SourceSecurityError("invalid zip archive") from exc
+    finally:
+        stream.seek(position)
 
 
 def sanitize_untrusted_text(text: str) -> tuple[str, list[str]]:

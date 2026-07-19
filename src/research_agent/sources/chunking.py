@@ -22,8 +22,7 @@ def _make_chunk(source: SourceAsset, blocks: list[ContentBlock], ordinal: int) -
     return SourceChunk(chunk_id=f"chk_{identity}", source_id=source.source_id, source_version=source.version,
                        text=text, heading_path=heading_path, locators=locators,
                        block_ids=[block.block_id for block in blocks], token_count=token_count(text),
-                       content_hash=content_hash, ordinal=ordinal,
-                       embedding_model="hashing-v1", embedding_version="1")
+                       content_hash=content_hash, ordinal=ordinal)
 
 
 def chunk_document(source: SourceAsset, document: SourceDocument, max_chars: int = 1800, overlap_blocks: int = 1) -> list[SourceChunk]:

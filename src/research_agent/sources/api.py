@@ -2,19 +2,44 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import uuid
+
+import anyio
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from .jobs import JobQueue
-from .models import EvidenceRecord
+from .jobs import JobQueue, SourceWorker
 from .repository import SQLiteRepository
 from .search import SearchFilters
 from .quality import ResearchRequirement
 from .service import SourceService
 from .storage import LocalObjectStore
+from .observability import metrics
+
+
+def drain_source_jobs(service: SourceService) -> None:
+    worker = SourceWorker(service)
+    while worker.run_once() is not None:
+        pass
+
+
+def authorize_source_project(project_id: str, x_source_api_key: str | None = Header(default=None)) -> None:
+    """Optional key-to-project ACL. Empty config keeps local development open."""
+    raw = os.getenv("SOURCE_API_KEYS_JSON", "").strip()
+    if not raw:
+        return
+    try:
+        mapping = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail="invalid SOURCE_API_KEYS_JSON") from exc
+    allowed = mapping.get(x_source_api_key or "")
+    if allowed == "*" or isinstance(allowed, list) and ("*" in allowed or project_id in allowed):
+        return
+    raise HTTPException(status_code=403, detail="source project access denied")
 
 
 class SourcePatch(BaseModel):
@@ -42,30 +67,32 @@ def build_runtime(data_dir: str | Path) -> tuple[SourceService, JobQueue]:
     return service, JobQueue(repository)
 
 
-def create_sources_router(service: SourceService, queue: JobQueue) -> APIRouter:
-    router = APIRouter(prefix="/api/projects/{project_id}")
+def create_sources_router(service: SourceService, queue: JobQueue, *, process_in_background: bool = False) -> APIRouter:
+    router = APIRouter(prefix="/api/projects/{project_id}", dependencies=[Depends(authorize_source_project)])
 
     @router.post("/sources")
-    async def upload_source(project_id: str, file: UploadFile = File(...)):
-        data = await file.read()
+    async def upload_source(background_tasks: BackgroundTasks, project_id: str, file: UploadFile = File(...)):
         try:
-            result = service.register_bytes(project_id, file.filename or "upload.txt", data)
+            result = await anyio.to_thread.run_sync(lambda: service.register_stream(project_id, file.filename or "upload.txt", file.file))
             job = queue.enqueue(project_id, "ingest", f"ingest:{project_id}:{result.source.sha256}", result.source.source_id)
+            if process_in_background and job.status.value == "queued":
+                background_tasks.add_task(drain_source_jobs, service)
             return {"source": result.source, "job": job, "deduplicated": result.deduplicated}
         except (ValueError, KeyError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/source-batches")
-    async def upload_batch(project_id: str, files: Annotated[list[UploadFile], File(...)]):
+    async def upload_batch(background_tasks: BackgroundTasks, project_id: str, files: Annotated[list[UploadFile], File(...)]):
         results = []
         for file in files:
-            data = await file.read()
             try:
-                result = service.register_bytes(project_id, file.filename or "upload.txt", data)
+                result = await anyio.to_thread.run_sync(lambda file=file: service.register_stream(project_id, file.filename or "upload.txt", file.file))
                 job = queue.enqueue(project_id, "ingest", f"ingest:{project_id}:{result.source.sha256}", result.source.source_id)
                 results.append({"source": result.source, "job": job, "deduplicated": result.deduplicated})
             except (ValueError, KeyError) as exc:
                 results.append({"filename": file.filename, "error": str(exc)})
+        if process_in_background and any(item.get("job") and item["job"].status.value == "queued" for item in results):
+            background_tasks.add_task(drain_source_jobs, service)
         return {"items": results}
 
     @router.get("/sources")
@@ -84,15 +111,8 @@ def create_sources_router(service: SourceService, queue: JobQueue) -> APIRouter:
     @router.patch("/sources/{source_id}")
     async def patch_source(project_id: str, source_id: str, patch: SourcePatch):
         try:
-            source = service.get_source(project_id, source_id)
             values = patch.model_dump(exclude_unset=True)
-            for key, value in values.items():
-                setattr(source, key, value)
-            source.updated_at = __import__("research_agent.sources.models", fromlist=["utcnow"]).utcnow()
-            service.repository.update_source(source)
-            service.repository.put_audit(__import__("research_agent.sources.models", fromlist=["AuditEvent", "utcnow"]).AuditEvent(
-                event_id=f"audit_patch_{source_id}", project_id=project_id, source_id=source_id, actor="user", action="source.updated", details=values))
-            return source
+            return service.update_metadata(project_id, source_id, values)
         except (KeyError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -111,10 +131,12 @@ def create_sources_router(service: SourceService, queue: JobQueue) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/sources/{source_id}/reprocess")
-    async def reprocess_source(project_id: str, source_id: str):
+    async def reprocess_source(background_tasks: BackgroundTasks, project_id: str, source_id: str):
         try:
             source = service.get_source(project_id, source_id)
-            job = queue.enqueue(project_id, "reprocess", f"reprocess:{project_id}:{source.sha256}:{source.version}", source_id)
+            job = queue.enqueue(project_id, "reprocess", f"reprocess:{project_id}:{source.sha256}:{source.version}:{uuid.uuid4().hex}", source_id)
+            if process_in_background:
+                background_tasks.add_task(drain_source_jobs, service)
             return job
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -166,6 +188,10 @@ def create_sources_router(service: SourceService, queue: JobQueue) -> APIRouter:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @router.get("/source-metrics")
+    async def source_metrics(project_id: str):
+        return metrics.snapshot()
+
     return router
 
 
@@ -174,4 +200,3 @@ def create_app(data_dir: str | Path = ".data/sources") -> FastAPI:
     app = FastAPI(title="Research Agent Source Center")
     app.include_router(create_sources_router(service, queue))
     return app
-
