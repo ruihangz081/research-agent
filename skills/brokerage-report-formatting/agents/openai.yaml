@@ -1,0 +1,4 @@
+interface:
+  display_name: "券商研报排版"
+  short_description: "将中文调研内容整理为专业券商研报结构、图表和交付格式"
+  default_prompt: "Use $brokerage-report-formatting to format this research report as a professional Chinese brokerage report."

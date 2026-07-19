@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "charts": [
+    {
+      "id": "market_growth",
+      "type": "line",
+      "title": "工业软件市场规模保持稳健增长",
+      "unit": "亿元",
+      "as_of_date": "2026-07-19",
+      "source": "样例公开资料，Research Agent 整理",
+      "labels": ["2022", "2023", "2024", "2025E", "2026E"],
+      "series": [{"name": "市场规模", "values": [100, 118, 136, 155, 178], "value_kind": ["actual", "actual", "actual", "forecast", "forecast"]}]
+    },
+    {
+      "id": "revenue_growth",
+      "type": "combo",
+      "title": "收入扩张同时伴随增速变化",
+      "unit": "亿元 / %",
+      "as_of_date": "2026-07-19",
+      "source": "样例公开资料，Research Agent 整理",
+      "labels": ["2022", "2023", "2024", "2025E"],
+      "series": [
+        {"name": "收入", "values": [32, 38, 46, 55], "value_kind": ["actual", "actual", "actual", "forecast"]},
+        {"name": "增速", "values": [12, 18.8, 21.1, 19.6], "value_kind": ["actual", "actual", "actual", "forecast"], "axis": "right"}
+      ]
+    },
+    {
+      "id": "sensitivity",
+      "type": "heatmap",
+      "title": "收入增速与利润率共同影响情景结果",
+      "unit": "指数",
+      "as_of_date": "2026-07-19",
+      "source": "Research Agent 样例情景测算",
+      "labels": ["低增速", "基准", "高增速"],
+      "series": [
+        {"name": "低利润率", "values": [82, 91, 103], "value_kind": ["estimate", "estimate", "estimate"]},
+        {"name": "基准利润率", "values": [91, 100, 114], "value_kind": ["estimate", "estimate", "estimate"]},
+        {"name": "高利润率", "values": [100, 111, 126], "value_kind": ["estimate", "estimate", "estimate"]}
+      ]
+    }
+  ]
+}

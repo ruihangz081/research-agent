@@ -3,11 +3,11 @@ Lumitrace.mountShell("results");
 const state = { projectId: Lumitrace.selectedProject(), projects: [], project: null, artifacts: [], selectedKey: null };
 const $ = (id) => document.getElementById(id);
 
-[$("pdfIcon"), $("texIcon"), $("typesetPdfIcon")].forEach((item) => { item.innerHTML = Lumitrace.icon("download", 17); });
+[$("pdfIcon"), $("texIcon")].forEach((item) => { item.innerHTML = Lumitrace.icon("download", 17); });
 $("typesetIcon").innerHTML = Lumitrace.icon("arrow", 17);
 
 function artifactGroup(key) {
-  if (key === "final_report_tex" || key === "final_report_typeset_pdf") return "delivery";
+  if (key === "final_report_tex" || key === "chart_manifest") return "delivery";
   if (key.startsWith("round_") || key.startsWith("feedback_round_")) return "round";
   if (key.includes("source")) return "source";
   return "report";
@@ -34,12 +34,11 @@ function updateDelivery() {
   $("downloadPdf").disabled = !exists("final_report");
   $("typeset").disabled = !exists("final_report") || state.project?.running;
   $("downloadTex").disabled = !exists("final_report_tex");
-  $("downloadTypesetPdf").disabled = !exists("final_report_typeset_pdf");
   const complete = state.project?.stage === "done";
   $("generationStatus").innerHTML = `<span class="status-pill ${complete ? "success" : ""}"><i class="status-dot ${complete ? "success" : "running"}"></i>${complete ? "已完成" : "生成中"}</span>`;
   $("generationMeter").style.width = complete ? "100%" : `${Math.max(8, (state.project ? state.project.collect_round / Math.max(1, state.project.max_collect_rounds) * 70 : 0))}%`;
-  $("deliveryWarning").classList.toggle("hidden", exists("final_report_typeset_pdf") || !exists("final_report_tex"));
-  $("deliveryWarning").innerHTML = "高级 PDF 尚未生成。如果本机未安装 xelatex 或 lualatex，系统只会生成 TeX 源文件。";
+  $("deliveryWarning").classList.toggle("hidden", !exists("final_report") || exists("final_report_tex"));
+  $("deliveryWarning").innerHTML = "正式排版尚未生成，可点击“生成 / 刷新正式版”。";
 }
 
 async function loadPreview() {
@@ -51,14 +50,10 @@ async function loadPreview() {
     $("documentPreview").innerHTML = '<div class="empty"><span class="empty-symbol">◇</span><strong>成果尚未生成</strong><p>完成对应研究阶段后即可在此预览。</p></div>';
     return;
   }
-  if (artifact.key === "final_report_typeset_pdf") {
-    $("documentPreview").innerHTML = `<div class="empty"><span class="empty-symbol">PDF</span><strong>高级排版 PDF 已生成</strong><p>PDF 文件请通过右侧下载区域打开。</p></div>`;
-    return;
-  }
   $("documentPreview").innerHTML = '<div class="empty compact"><span class="spinner"></span><strong>正在读取成果</strong></div>';
   try {
     const data = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/artifacts/${encodeURIComponent(artifact.key)}`);
-    $("documentPreview").innerHTML = Lumitrace.renderMarkdown(data.content);
+    $("documentPreview").innerHTML = data.html || Lumitrace.renderMarkdown(data.content);
   } catch (error) {
     $("documentPreview").innerHTML = `<div class="empty"><span class="empty-symbol">!</span><strong>预览失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p></div>`;
   }
@@ -106,6 +101,5 @@ $("typeFilter").addEventListener("change", () => { renderList(); loadPreview(); 
 $("downloadPdf").addEventListener("click", () => openDownload("/download/final-report.pdf"));
 $("typeset").addEventListener("click", typeset);
 $("downloadTex").addEventListener("click", () => openDownload("/download/final-report.tex"));
-$("downloadTypesetPdf").addEventListener("click", () => openDownload("/download/final-report-typeset.pdf"));
 
 initialize();

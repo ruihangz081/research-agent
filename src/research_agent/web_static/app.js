@@ -47,7 +47,7 @@ function renderCheckpoint(project) {
 }
 
 function previewableArtifacts(project) {
-  return project.artifacts.filter((artifact) => artifact.key !== "final_report_typeset_pdf");
+  return project.artifacts;
 }
 
 function renderArtifacts(project) {
@@ -68,7 +68,6 @@ function updateDownloads(project) {
   $("downloadPdfBtn").disabled = !exists("final_report");
   $("typesetBtn").disabled = !exists("final_report") || project.running;
   $("downloadTexBtn").disabled = !exists("final_report_tex");
-  $("downloadTypesetPdfBtn").disabled = !exists("final_report_typeset_pdf");
 }
 
 async function loadArtifact() {
@@ -83,7 +82,7 @@ async function loadArtifact() {
   }
   try {
     const artifact = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/artifacts/${encodeURIComponent(state.artifactKey)}`);
-    $("artifactView").innerHTML = Lumitrace.renderMarkdown(artifact.content);
+    $("artifactView").innerHTML = artifact.html || Lumitrace.renderMarkdown(artifact.content);
   } catch (error) {
     $("artifactView").innerHTML = `<div class="empty"><span class="empty-symbol">!</span><strong>内容读取失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p></div>`;
   }
@@ -169,7 +168,6 @@ $("rejectBtn").addEventListener("click", () => approve(false));
 $("downloadPdfBtn").addEventListener("click", () => openDownload("/download/final-report.pdf"));
 $("typesetBtn").addEventListener("click", typeset);
 $("downloadTexBtn").addEventListener("click", () => openDownload("/download/final-report.tex"));
-$("downloadTypesetPdfBtn").addEventListener("click", () => openDownload("/download/final-report-typeset.pdf"));
 
 loadProject();
 state.poll = window.setInterval(loadProject, 3000);

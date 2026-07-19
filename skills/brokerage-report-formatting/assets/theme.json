@@ -1,0 +1,13 @@
+{
+  "name": "brokerage_research_v1",
+  "colors": ["#163A5F", "#D59B2D", "#4F759B", "#8AA1B5", "#9B4D45", "#5D7A68"],
+  "forecast_color": "#8AA1B5",
+  "grid_color": "#DCE3E8",
+  "text_color": "#18212B",
+  "muted_color": "#66727E",
+  "background_color": "#FFFFFF",
+  "font_candidates": ["PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Arial Unicode MS", "DejaVu Sans"],
+  "figure_width_inches": 7.2,
+  "figure_height_inches": 4.2,
+  "dpi": 180
+}

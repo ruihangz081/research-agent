@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>项目工作区 · 溯光 Lumitrace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260719" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260719-report" />
   </head>
   <body>
     <div class="app-shell">
@@ -52,10 +52,9 @@
             <section class="panel">
               <div class="panel-header"><h2>项目产物</h2><span class="muted">按阶段持续生成</span></div>
               <div class="artifact-toolbar">
-                <button id="downloadPdfBtn" class="button secondary small" type="button" disabled>普通 PDF</button>
-                <button id="typesetBtn" class="button primary small" type="button" disabled>LaTeX 排版</button>
+                <button id="downloadPdfBtn" class="button primary small" type="button" disabled>正式 PDF</button>
+                <button id="typesetBtn" class="button secondary small" type="button" disabled>重新排版</button>
                 <button id="downloadTexBtn" class="button secondary small" type="button" disabled>下载 TeX</button>
-                <button id="downloadTypesetPdfBtn" class="button secondary small" type="button" disabled>高级 PDF</button>
               </div>
               <div class="artifact-layout">
                 <nav id="artifactTabs" class="artifact-tabs" aria-label="项目产物"></nav>
@@ -66,7 +65,7 @@
         </div>
       </main>
     </div>
-    <script src="/static/ui.js?v=20260719"></script>
-    <script src="/static/app.js?v=20260719"></script>
+    <script src="/static/ui.js?v=20260719-report"></script>
+    <script src="/static/app.js?v=20260719-report"></script>
   </body>
 </html>

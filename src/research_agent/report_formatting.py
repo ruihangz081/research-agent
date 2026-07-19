@@ -1,0 +1,398 @@
+"""Pandoc-based HTML/LaTeX/PDF delivery for brokerage-style reports."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+from datetime import date
+from html import escape
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
+
+from . import config
+from .agent_skills import load_project_skill
+from .llm import LLMClient
+from .report_charts import (
+    ChartAsset,
+    ChartManifest,
+    ChartSpec,
+    load_chart_manifest,
+    prepare_llm_fallbacks,
+    render_chart_manifest,
+    SUPPORTED_CHART_TYPES,
+)
+
+_PLACEHOLDER = re.compile(
+    r"^[ \t]*\{\{chart:([a-z0-9][a-z0-9_-]{0,63})\}\}[ \t]*$",
+    re.MULTILINE,
+)
+_DISCLAIMER = "本报告基于公开信息和用户授权材料自动整理，仅供研究参考，不构成任何投资建议。"
+
+
+def find_pandoc() -> str | None:
+    configured = config.REPORT_PANDOC_BIN
+    if Path(configured).is_file():
+        return str(Path(configured).resolve())
+    found = shutil.which(configured)
+    if found:
+        return found
+    try:
+        import pypandoc
+
+        bundled = pypandoc.get_pandoc_path()
+        return bundled if Path(bundled).is_file() else None
+    except (ImportError, OSError):
+        return None
+
+
+def find_latex_engine() -> str | None:
+    configured = config.REPORT_LATEX_ENGINE
+    if Path(configured).is_file():
+        return str(Path(configured).resolve())
+    found = shutil.which(configured)
+    if found:
+        return found
+    texbin = Path("/Library/TeX/texbin") / configured
+    return str(texbin) if texbin.is_file() else None
+
+
+def _ensure_disclaimer(markdown: str) -> str:
+    if _DISCLAIMER in markdown:
+        return markdown
+    return (
+        markdown.rstrip()
+        + "\n\n---\n\n## 风险提示与免责声明\n\n"
+        + _DISCLAIMER
+        + "\n"
+    )
+
+
+def _fallback_table(chart: ChartSpec) -> str:
+    headers = ["项目", *chart.labels]
+    separator = ["---", *["---:" for _ in chart.labels]]
+    rows = []
+    for series in chart.series:
+        values = ["—" if value is None else f"{value:g}" for value in series.values]
+        rows.append([series.name, *values])
+    lines = [
+        f"**{chart.title}（图表降级为数据表）**",
+        "",
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(separator) + " |",
+        *["| " + " | ".join(row) + " |" for row in rows],
+        "",
+        f"> 单位：{chart.unit}；截至：{chart.as_of_date}；资料来源：{chart.source}",
+    ]
+    return "\n".join(lines)
+
+
+def replace_chart_placeholders(
+    markdown: str,
+    manifest: ChartManifest,
+    assets: dict[str, ChartAsset],
+    *,
+    target: str,
+    project_id: str = "",
+) -> str:
+    chart_map = {chart.id: chart for chart in manifest.charts}
+    used = set(_PLACEHOLDER.findall(markdown))
+    unknown = used - set(chart_map)
+    if unknown:
+        raise ValueError(f"Markdown 引用了不存在的图表：{sorted(unknown)}")
+    unused_required = {chart.id for chart in manifest.charts if chart.required} - used
+    if unused_required:
+        raise ValueError(f"必需图表未在 Markdown 中使用：{sorted(unused_required)}")
+
+    def replacement(match: re.Match[str]) -> str:
+        chart = chart_map[match.group(1)]
+        asset = assets.get(chart.id)
+        if asset is None:
+            if chart.required:
+                raise ValueError(f"必需图表没有渲染资产：{chart.id}")
+            return _fallback_table(chart)
+        note = f"；备注：{chart.note}" if chart.note else ""
+        if target == "html":
+            source = escape(chart.source)
+            title = escape(chart.title)
+            unit = escape(chart.unit)
+            as_of = escape(chart.as_of_date)
+            src = f"/api/projects/{quote(project_id, safe='')}/charts/{chart.id}.svg"
+            return (
+                f'<figure class="report-chart" id="chart-{chart.id}">'
+                f'<img src="{src}" alt="{title}" loading="lazy">'
+                f'<figcaption><strong>{title}</strong>'
+                f'<small>单位：{unit}；截至：{as_of}；资料来源：{source}{escape(note)}</small>'
+                "</figcaption></figure>"
+            )
+        if target == "latex":
+            return (
+                f"![{chart.title}](05_charts/{chart.id}.pdf)\n\n"
+                f"> 单位：{chart.unit}；截至：{chart.as_of_date}；资料来源：{chart.source}{note}"
+            )
+        raise ValueError(f"未知图表替换目标：{target}")
+
+    rendered = _PLACEHOLDER.sub(replacement, markdown)
+    if "{{chart:" in rendered:
+        raise ValueError("报告仍包含未解析的图表占位符")
+    return rendered
+
+
+def _run(command: list[str], *, cwd: Path, input_text: str | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=config.REPORT_RENDER_TIMEOUT,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"报告渲染超时（{config.REPORT_RENDER_TIMEOUT}s）：{command[0]}") from exc
+
+
+def _sanitize_html(html: str) -> str:
+    try:
+        import bleach
+    except ImportError as exc:
+        raise RuntimeError("缺少 bleach，无法安全生成报告 HTML") from exc
+    tags = {
+        "a", "blockquote", "br", "caption", "code", "col", "colgroup", "div",
+        "em", "figcaption", "figure", "h1", "h2", "h3", "h4", "hr", "img",
+        "li", "ol", "p", "pre", "section", "small", "span", "strong", "sub",
+        "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+    }
+    attributes = {
+        "a": ["href", "title"],
+        "img": ["src", "alt", "loading", "width", "height"],
+        "td": ["colspan", "rowspan", "align"],
+        "th": ["colspan", "rowspan", "align"],
+        "*": ["class", "id"],
+    }
+    return bleach.clean(
+        html,
+        tags=tags,
+        attributes=attributes,
+        protocols={"http", "https", "mailto"},
+        strip=True,
+    )
+
+
+def build_report_html(
+    *,
+    topic: str,
+    project_id: str,
+    project_dir: Path,
+    markdown: str,
+    manifest: ChartManifest,
+    assets: dict[str, ChartAsset],
+) -> Path:
+    pandoc = find_pandoc()
+    if not pandoc:
+        raise RuntimeError("缺少 Pandoc；请安装 pandoc 或项目依赖 pypandoc-binary")
+    prepared = replace_chart_placeholders(
+        _ensure_disclaimer(markdown), manifest, assets, target="html", project_id=project_id
+    )
+    proc = _run(
+        [pandoc, "--from=gfm+raw_html", "--to=html5", "--wrap=none"],
+        cwd=project_dir,
+        input_text=prepared,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Pandoc HTML 转换失败：{proc.stderr.strip()}")
+    html_path = project_dir / config.FILE_FINAL_REPORT_HTML
+    html_path.write_text(
+        f'<article class="brokerage-report" data-topic="{escape(topic)}">{_sanitize_html(proc.stdout)}</article>',
+        encoding="utf-8",
+    )
+    return html_path
+
+
+def build_report_latex(
+    *,
+    topic: str,
+    project_dir: Path,
+    markdown: str,
+    manifest: ChartManifest,
+    assets: dict[str, ChartAsset],
+) -> Path:
+    pandoc = find_pandoc()
+    if not pandoc:
+        raise RuntimeError("缺少 Pandoc；请安装 pandoc 或项目依赖 pypandoc-binary")
+    skill = load_project_skill(config.REPORT_FORMATTING_SKILL)
+    template = skill.assets_dir / "brokerage-report.tex"
+    style = skill.assets_dir / "brokerage-report.sty"
+    if not template.is_file() or not style.is_file():
+        raise RuntimeError("券商研报 LaTeX 模板资产不完整")
+    shutil.copyfile(style, project_dir / style.name)
+    prepared = replace_chart_placeholders(
+        _ensure_disclaimer(markdown), manifest, assets, target="latex"
+    )
+    prepared = re.sub(r"\A# [^\n]+\n+", "", prepared, count=1)
+    source_path = project_dir / "05_final_report.render.md"
+    source_path.write_text(prepared, encoding="utf-8")
+    tex_path = project_dir / config.FILE_FINAL_REPORT_TEX
+    proc = _run(
+        [
+            pandoc,
+            source_path.name,
+            "--from=gfm+raw_html",
+            "--to=latex",
+            "--standalone",
+            "--shift-heading-level-by=-1",
+            f"--template={template}",
+            f"--metadata=title:{topic} 调研报告",
+            f"--metadata=date:{date.today().isoformat()}",
+            f"--resource-path={project_dir}",
+            f"--output={tex_path.name}",
+        ],
+        cwd=project_dir,
+    )
+    source_path.unlink(missing_ok=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"Pandoc LaTeX 转换失败：{proc.stderr.strip()}")
+    return tex_path
+
+
+def compile_report_pdf(tex_path: Path) -> Path | None:
+    engine = find_latex_engine()
+    if not engine:
+        return None
+    env = dict(os.environ)
+    skill = load_project_skill(config.REPORT_FORMATTING_SKILL)
+    current_texinputs = env.get("TEXINPUTS", "")
+    env["TEXINPUTS"] = f"{skill.assets_dir}{os.pathsep}{current_texinputs}"
+    combined = ""
+    for _ in range(2):
+        proc = _run(
+            [engine, "-interaction=nonstopmode", "-halt-on-error", tex_path.name],
+            cwd=tex_path.parent,
+            env=env,
+        )
+        combined += proc.stdout + "\n" + proc.stderr + "\n"
+        if proc.returncode != 0:
+            compile_log = tex_path.with_suffix(".compile.log")
+            compile_log.write_text(combined, encoding="utf-8")
+            raise RuntimeError(f"LaTeX 编译失败，日志：{compile_log.name}")
+    serious_overfull = [
+        line for line in combined.splitlines()
+        if "Overfull \\hbox" in line and re.search(r"\((?:[2-9]\d|\d{3,})\.\d+pt too wide\)", line)
+    ]
+    fatal_warnings = [line for line in combined.splitlines() if "Missing character:" in line]
+    if serious_overfull or fatal_warnings:
+        warning_path = tex_path.with_suffix(".layout-warnings.log")
+        warning_path.write_text("\n".join(serious_overfull + fatal_warnings), encoding="utf-8")
+        raise RuntimeError(f"PDF 存在严重排版警告：{warning_path.name}")
+    pdf_path = tex_path.with_suffix(".pdf")
+    return pdf_path if pdf_path.is_file() else None
+
+
+def inspect_pdf(pdf_path: Path, *, topic: str) -> dict[str, Any]:
+    try:
+        import fitz
+    except ImportError as exc:
+        raise RuntimeError("缺少 PyMuPDF，无法检查 PDF") from exc
+    document = fitz.open(pdf_path)
+    if document.page_count < 1:
+        raise RuntimeError("PDF 没有有效页面")
+    text = "\n".join(page.get_text() for page in document)
+    if topic not in text:
+        raise RuntimeError("PDF 文本检查失败：缺少报告标题")
+    if "不构成任何投资建议" not in text:
+        raise RuntimeError("PDF 文本检查失败：缺少免责声明")
+    preview_dir = pdf_path.parent / "tmp" / "pdfs"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    if document.page_count <= 8:
+        sample_pages = list(range(document.page_count))
+    else:
+        image_pages = [index for index, page in enumerate(document) if page.get_images(full=True)]
+        sample_pages = sorted({
+            0,
+            min(1, document.page_count - 1),
+            document.page_count - 1,
+            *image_pages[:3],
+        })
+    previews = []
+    for page_index in sample_pages:
+        page = document.load_page(page_index)
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+        output = preview_dir / f"{pdf_path.stem}-page-{page_index + 1}.png"
+        pixmap.save(output)
+        if output.stat().st_size < 5_000:
+            raise RuntimeError(f"PDF 预览页异常：{output.name}")
+        previews.append(str(output))
+    result = {
+        "page_count": document.page_count,
+        "text_characters": len(text),
+        "sample_pages": [index + 1 for index in sample_pages],
+        "previews": previews,
+    }
+    document.close()
+    (pdf_path.parent / "05_pdf_qa.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return result
+
+
+async def generate_report_artifacts(
+    *,
+    topic: str,
+    project_dir: Path,
+    final_report_path: Path,
+    client: LLMClient | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    del force  # Artifacts are deterministic and intentionally regenerated together.
+    manifest_path = project_dir / config.FILE_CHART_MANIFEST
+    manifest = load_chart_manifest(manifest_path)
+    unsupported = [
+        chart
+        for chart in manifest.charts
+        if chart.type not in SUPPORTED_CHART_TYPES and chart.vega_lite_spec is None
+    ]
+    if unsupported:
+        if client is not None:
+            await prepare_llm_fallbacks(manifest, project_dir=project_dir, client=client)
+        else:
+            async with LLMClient(
+                base_url=config.LLM_BASE_URL,
+                api_key=config.LLM_API_KEY,
+                model=config.LLM_MODEL,
+                timeout=config.LLM_TIMEOUT,
+                max_retries=config.LLM_MAX_RETRIES,
+            ) as active_client:
+                await prepare_llm_fallbacks(manifest, project_dir=project_dir, client=active_client)
+    charts_dir = project_dir / "05_charts"
+    assets = render_chart_manifest(manifest, charts_dir)
+    markdown = final_report_path.read_text(encoding="utf-8")
+    html_path = build_report_html(
+        topic=topic,
+        project_id=project_dir.name,
+        project_dir=project_dir,
+        markdown=markdown,
+        manifest=manifest,
+        assets=assets,
+    )
+    tex_path = build_report_latex(
+        topic=topic,
+        project_dir=project_dir,
+        markdown=markdown,
+        manifest=manifest,
+        assets=assets,
+    )
+    pdf_path = compile_report_pdf(tex_path)
+    qa = inspect_pdf(pdf_path, topic=topic) if pdf_path else None
+    return {
+        "manifest_path": manifest_path,
+        "charts_dir": charts_dir,
+        "html_path": html_path,
+        "tex_path": tex_path,
+        "pdf_path": pdf_path,
+        "engine": find_latex_engine(),
+        "pandoc": find_pandoc(),
+        "qa": qa,
+    }

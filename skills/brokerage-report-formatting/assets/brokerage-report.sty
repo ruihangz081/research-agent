@@ -1,0 +1,46 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{brokerage-report}[2026/07/19 Chinese brokerage report style]
+\RequirePackage[a4paper,left=21mm,right=19mm,top=22mm,bottom=21mm,headheight=22pt]{geometry}
+\RequirePackage{xcolor}
+\RequirePackage{fancyhdr}
+\RequirePackage{titlesec}
+\RequirePackage{enumitem}
+\RequirePackage{caption}
+\RequirePackage{float}
+\RequirePackage{setspace}
+\RequirePackage{etoolbox}
+\definecolor{BrokerBlue}{HTML}{163A5F}
+\definecolor{BrokerGold}{HTML}{D59B2D}
+\definecolor{BrokerMuted}{HTML}{66727E}
+\definecolor{BrokerGrid}{HTML}{DCE3E8}
+\definecolor{BrokerText}{HTML}{18212B}
+\color{BrokerText}
+\setstretch{1.32}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{2pt}
+\setlist{nosep,leftmargin=2em}
+\titleformat{\section}{\Large\bfseries\color{BrokerBlue}}{\thesection}{0.8em}{}[\vspace{2pt}\color{BrokerGold}\titlerule]
+\titleformat{\subsection}{\large\bfseries\color{BrokerBlue}}{\thesubsection}{0.7em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{BrokerText}}{\thesubsubsection}{0.6em}{}
+\titlespacing*{\section}{0pt}{18pt}{10pt}
+\titlespacing*{\subsection}{0pt}{14pt}{7pt}
+\captionsetup{font=small,labelfont=bf,labelsep=space,justification=centering}
+\floatplacement{figure}{htbp}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{BrokerMuted}Research Agent 深度研究}
+\fancyhead[R]{\small\color{BrokerMuted}\leftmark}
+\fancyfoot[C]{\small\color{BrokerMuted}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{BrokerGrid}\leaders\hrule height \headrulewidth\hfill}}
+\renewcommand{\arraystretch}{1.25}
+\setlength{\tabcolsep}{3.5pt}
+\AtBeginEnvironment{longtable}{\small}
+\makeatletter
+\newcommand{\BrokerNeedSpace}[1]{%
+  \begingroup\setlength{\dimen@}{#1}%
+  \vskip\z@\@plus\dimen@\penalty-100%
+  \vskip\z@\@plus-\dimen@\vskip\dimen@\penalty9999%
+  \vskip-\dimen@\vskip\z@skip\endgroup}
+\makeatother
+\pretocmd{\section}{\BrokerNeedSpace{0.30\textheight}}{}{}

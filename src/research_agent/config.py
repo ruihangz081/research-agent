@@ -30,6 +30,7 @@ STRATEGIST_MAX_ROUNDS: int = int(os.getenv("STRATEGIST_MAX_ROUNDS", "5"))
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 PROJECTS_DIR: Path = Path(os.getenv("PROJECTS_DIR", str(PROJECT_ROOT / "projects"))).expanduser()
 SOURCE_DATA_DIR: Path = Path(os.getenv("SOURCE_DATA_DIR", str(PROJECT_ROOT / ".data" / "sources"))).expanduser()
+PROJECT_SKILLS_DIR: Path = PROJECT_ROOT / "skills"
 
 # === 产物文件名（每阶段固定） ===
 FILE_OUTLINE = "01_outline.md"
@@ -39,6 +40,10 @@ FILE_RAW_DATA_DIR = "03_raw_data"
 FILE_VALIDATION = "03_validation_report.md"
 FILE_ANALYSIS = "04_analysis.md"
 FILE_FINAL_REPORT = "05_final_report.md"
+FILE_CHART_MANIFEST = "05_chart_manifest.json"
+FILE_FINAL_REPORT_HTML = "05_final_report.html"
+FILE_FINAL_REPORT_TEX = "05_final_report.tex"
+FILE_FINAL_REPORT_PDF = "05_final_report.pdf"
 FILE_STATE = "state.json"
 
 # 循环中间产物命名（占位 {n}）
@@ -48,6 +53,19 @@ FILE_FEEDBACK_ROUND = "feedback_round_{n}.json"
 # === 循环上限 ===
 MAX_COLLECT_ROUNDS: int = int(os.getenv("MAX_COLLECT_ROUNDS", "3"))
 OUTPUT_PREFERENCE: str = os.getenv("OUTPUT_PREFERENCE", "balanced")
+
+# === 券商研报排版 ===
+REPORT_FORMATTING_SKILL: str = os.getenv(
+    "REPORT_FORMATTING_SKILL", "brokerage-report-formatting"
+)
+REPORT_THEME: str = os.getenv("REPORT_THEME", "brokerage_research_v1")
+REPORT_MAX_CHARTS: int = int(os.getenv("REPORT_MAX_CHARTS", "20"))
+REPORT_ENABLE_LLM_CHART_FALLBACK: bool = os.getenv(
+    "REPORT_ENABLE_LLM_CHART_FALLBACK", "true"
+).lower() in {"1", "true", "yes", "on"}
+REPORT_PANDOC_BIN: str = os.getenv("REPORT_PANDOC_BIN", "pandoc")
+REPORT_LATEX_ENGINE: str = os.getenv("REPORT_LATEX_ENGINE", "xelatex")
+REPORT_RENDER_TIMEOUT: int = int(os.getenv("REPORT_RENDER_TIMEOUT", "120"))
 
 # === 检查点文件（用户确认后由 CLI 写入） ===
 APPROVAL_MARK = ".approved"

@@ -23,6 +23,10 @@ dependencies = [
     "PyMuPDF>=1.24",
     "pytesseract>=0.3.13",
     "python-multipart>=0.0.9",
+    "bleach>=6.1",
+    "matplotlib>=3.8",
+    "pypandoc-binary>=1.15",
+    "vl-convert-python>=1.7",
 ]
 
 [project.optional-dependencies]

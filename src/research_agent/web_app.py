@@ -5,7 +5,6 @@ import asyncio
 import json
 import os
 import re
-from html import escape
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -22,7 +21,6 @@ from .llm import ChatMessage, LLMClient
 from .orchestrator import _safe_run
 from .report_layout import (
     FILE_FINAL_REPORT_TEX,
-    FILE_FINAL_REPORT_TYPESET_PDF,
     generate_typeset_artifacts,
 )
 from .state import ProjectState, Stage
@@ -31,7 +29,6 @@ from .sources.api import build_runtime, create_sources_router
 
 STATIC_DIR = Path(__file__).parent / "web_static"
 ARTIFACT_LIMIT = 120_000
-FINAL_REPORT_PDF = "05_final_report.pdf"
 HTML_HEADERS = {"Cache-Control": "no-store"}
 ENV_PATH = config.PROJECT_ROOT / ".env"
 
@@ -237,18 +234,18 @@ def _artifact_paths(state: ProjectState) -> list[tuple[str, str, Path | None]]:
             Path(state.final_report_path) if state.final_report_path else None,
         ),
         (
+            "chart_manifest",
+            "图表清单",
+            Path(state.chart_manifest_path)
+            if state.chart_manifest_path
+            else state.project_dir / config.FILE_CHART_MANIFEST,
+        ),
+        (
             "final_report_tex",
             "LaTeX 源文件",
             Path(state.final_report_tex_path)
             if state.final_report_tex_path
             else state.project_dir / FILE_FINAL_REPORT_TEX,
-        ),
-        (
-            "final_report_typeset_pdf",
-            "高级排版 PDF",
-            Path(state.final_report_typeset_pdf_path)
-            if state.final_report_typeset_pdf_path
-            else state.project_dir / FILE_FINAL_REPORT_TYPESET_PDF,
         ),
     ]
     if raw_dir.exists():
@@ -268,177 +265,37 @@ def _read_artifact(path: Path | None) -> str:
     return text
 
 
-def _plain_markdown(text: str) -> str:
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
-    text = re.sub(r"\*([^*]+)\*", r"\1", text)
-    return text.strip()
-
-
-def _pdf_paragraph(text: str, style: Any) -> Any:
-    from reportlab.platypus import Paragraph
-
-    return Paragraph(escape(_plain_markdown(text)), style)
-
-
-def _write_pdf_from_markdown(markdown_path: Path, pdf_path: Path, title: str) -> None:
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import mm
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.platypus import PageBreak, Preformatted, SimpleDocTemplate, Spacer
-
-    base_font = "ResearchCJK"
-    font_candidates = [
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-    ]
-    for font_path in font_candidates:
-        try:
-            if Path(font_path).exists():
-                pdfmetrics.registerFont(TTFont(base_font, font_path))
-                break
-        except Exception:
-            continue
-    else:
-        base_font = "STSong-Light"
-        pdfmetrics.registerFont(UnicodeCIDFont(base_font))
-
-    styles = getSampleStyleSheet()
-    body = ParagraphStyle(
-        "CJKBody",
-        parent=styles["BodyText"],
-        fontName=base_font,
-        fontSize=10.5,
-        leading=17,
-        wordWrap="CJK",
-        spaceAfter=5,
-    )
-    h1 = ParagraphStyle(
-        "CJKHeading1",
-        parent=body,
-        fontSize=18,
-        leading=25,
-        textColor=colors.HexColor("#17201b"),
-        spaceBefore=8,
-        spaceAfter=10,
-    )
-    h2 = ParagraphStyle(
-        "CJKHeading2",
-        parent=body,
-        fontSize=14,
-        leading=21,
-        textColor=colors.HexColor("#0f766e"),
-        spaceBefore=10,
-        spaceAfter=6,
-    )
-    h3 = ParagraphStyle(
-        "CJKHeading3",
-        parent=body,
-        fontSize=12,
-        leading=18,
-        textColor=colors.HexColor("#255f99"),
-        spaceBefore=8,
-        spaceAfter=5,
-    )
-    code_style = ParagraphStyle(
-        "CJKCode",
-        parent=body,
-        fontName=base_font,
-        fontSize=9,
-        leading=13,
-        leftIndent=8,
-        rightIndent=8,
-        backColor=colors.HexColor("#f2f6f4"),
-        borderColor=colors.HexColor("#dce3de"),
-        borderWidth=0.5,
-        borderPadding=6,
-    )
-
-    story: list[Any] = [_pdf_paragraph(title, h1), Spacer(1, 4 * mm)]
-    in_code = False
-    code_lines: list[str] = []
-    text = markdown_path.read_text(encoding="utf-8")
-
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        stripped = line.strip()
-        if stripped.startswith("```"):
-            if in_code:
-                story.append(Preformatted("\n".join(code_lines), code_style))
-                story.append(Spacer(1, 3 * mm))
-                code_lines = []
-                in_code = False
-            else:
-                in_code = True
-            continue
-        if in_code:
-            code_lines.append(raw_line)
-            continue
-        if not stripped:
-            story.append(Spacer(1, 2 * mm))
-            continue
-        if stripped == "---":
-            story.append(Spacer(1, 5 * mm))
-            continue
-        if stripped.startswith("# "):
-            story.append(_pdf_paragraph(stripped[2:], h1))
-        elif stripped.startswith("## "):
-            story.append(_pdf_paragraph(stripped[3:], h2))
-        elif stripped.startswith("### "):
-            story.append(_pdf_paragraph(stripped[4:], h3))
-        elif stripped.startswith("- ") or stripped.startswith("* "):
-            story.append(_pdf_paragraph("• " + stripped[2:], body))
-        elif re.match(r"^\d+\.\s+", stripped):
-            story.append(_pdf_paragraph(stripped, body))
-        elif stripped.startswith("|"):
-            story.append(_pdf_paragraph(stripped, code_style))
-        elif stripped == "\\pagebreak":
-            story.append(PageBreak())
-        else:
-            story.append(_pdf_paragraph(stripped, body))
-
-    if code_lines:
-        story.append(Preformatted("\n".join(code_lines), code_style))
-
-    def _footer(canvas: Any, doc: Any) -> None:
-        canvas.saveState()
-        canvas.setFont(base_font, 8)
-        canvas.setFillColor(colors.HexColor("#68756f"))
-        canvas.drawRightString(200 * mm, 12 * mm, f"Page {doc.page}")
-        canvas.restoreState()
-
-    pdf_path.parent.mkdir(parents=True, exist_ok=True)
-    doc = SimpleDocTemplate(
-        str(pdf_path),
-        pagesize=A4,
-        leftMargin=18 * mm,
-        rightMargin=18 * mm,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
-        title=title,
-    )
-    doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
-
-
-def _final_report_pdf_path(state: ProjectState) -> Path:
+async def _final_report_pdf_path(state: ProjectState) -> Path:
     final_report = Path(state.final_report_path) if state.final_report_path else None
     if not final_report or not final_report.exists():
         raise HTTPException(status_code=404, detail="最终报告还没有生成")
-
-    pdf_path = state.project_dir / FINAL_REPORT_PDF
-    if not pdf_path.exists() or final_report.stat().st_mtime > pdf_path.stat().st_mtime:
+    pdf_path = state.project_dir / config.FILE_FINAL_REPORT_PDF
+    manifest_path = state.project_dir / config.FILE_CHART_MANIFEST
+    inputs = [final_report, manifest_path]
+    if not pdf_path.exists() or any(
+        path.is_file() and path.stat().st_mtime > pdf_path.stat().st_mtime
+        for path in inputs
+    ):
         try:
-            _write_pdf_from_markdown(final_report, pdf_path, f"{state.topic} 调研报告")
-        except ImportError as exc:
+            artifacts = await generate_typeset_artifacts(
+                topic=state.topic,
+                project_dir=state.project_dir,
+                final_report_path=final_report,
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        if not artifacts["pdf_path"]:
             raise HTTPException(
-                status_code=500,
-                detail="缺少 reportlab，请重新安装：pip install -e '.[search,web]'",
-            ) from exc
+                status_code=409,
+                detail="已生成 HTML 与 LaTeX，但缺少配置的 LaTeX 引擎，无法生成正式 PDF",
+            )
+        pdf_path = artifacts["pdf_path"]
+        state.chart_manifest_path = str(artifacts["manifest_path"])
+        state.final_report_html_path = str(artifacts["html_path"])
+        state.final_report_tex_path = str(artifacts["tex_path"])
+        state.final_report_pdf_path = str(pdf_path)
+        state.final_report_typeset_pdf_path = str(pdf_path)
+        state.save()
     return pdf_path
 
 
@@ -833,20 +690,41 @@ async def api_artifact(project_id: str, artifact_key: str) -> dict[str, Any]:
     state = _load_state(project_id)
     for key, label, path in _artifact_paths(state):
         if key == artifact_key:
-            return {
+            payload = {
                 "key": key,
                 "label": label,
                 "exists": bool(path and path.exists()),
                 "content": _read_artifact(path),
                 "name": path.name if path else "",
             }
+            if key == "final_report":
+                html_path = (
+                    Path(state.final_report_html_path)
+                    if state.final_report_html_path
+                    else state.project_dir / config.FILE_FINAL_REPORT_HTML
+                )
+                if html_path.is_file():
+                    payload["html"] = _read_artifact(html_path)
+            return payload
     raise HTTPException(status_code=404, detail="Artifact not found")
+
+
+@app.get("/api/projects/{project_id}/charts/{chart_file}")
+async def api_report_chart(project_id: str, chart_file: str) -> FileResponse:
+    _load_state(project_id)
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}\.(?:svg|png)", chart_file):
+        raise HTTPException(status_code=400, detail="Invalid chart file")
+    path = _project_dir(project_id) / "05_charts" / chart_file
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Chart not found")
+    media_type = "image/svg+xml" if path.suffix == ".svg" else "image/png"
+    return FileResponse(path, media_type=media_type, headers=HTML_HEADERS)
 
 
 @app.get("/api/projects/{project_id}/download/final-report.pdf")
 async def api_download_final_report_pdf(project_id: str) -> FileResponse:
     state = _load_state(project_id)
-    pdf_path = _final_report_pdf_path(state)
+    pdf_path = await _final_report_pdf_path(state)
     return FileResponse(
         pdf_path,
         media_type="application/pdf",
@@ -868,17 +746,20 @@ async def api_typeset_final_report(project_id: str) -> dict[str, Any]:
             final_report_path=final_report,
             force=True,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     state.final_report_tex_path = str(artifacts["tex_path"])
+    state.chart_manifest_path = str(artifacts["manifest_path"])
+    state.final_report_html_path = str(artifacts["html_path"])
     if artifacts["pdf_path"]:
+        state.final_report_pdf_path = str(artifacts["pdf_path"])
         state.final_report_typeset_pdf_path = str(artifacts["pdf_path"])
     state.save()
 
     return {
         "status": "pdf" if artifacts["pdf_path"] else "tex_only",
-        "message": "已生成高级排版 PDF" if artifacts["pdf_path"] else "已生成 LaTeX 源文件；本机缺少 xelatex/lualatex，暂未编译 PDF",
+        "message": "已生成正式券商研报 PDF" if artifacts["pdf_path"] else "已生成 HTML 与 LaTeX；本机缺少配置的 LaTeX 引擎，暂未编译 PDF",
         "has_engine": bool(artifacts["engine"]),
     }
 
@@ -901,8 +782,11 @@ async def api_download_final_report_tex(project_id: str) -> FileResponse:
             final_report_path=final_report,
         )
         tex_path = artifacts["tex_path"]
+        state.chart_manifest_path = str(artifacts["manifest_path"])
+        state.final_report_html_path = str(artifacts["html_path"])
         state.final_report_tex_path = str(tex_path)
         if artifacts["pdf_path"]:
+            state.final_report_pdf_path = str(artifacts["pdf_path"])
             state.final_report_typeset_pdf_path = str(artifacts["pdf_path"])
         state.save()
 
@@ -916,34 +800,11 @@ async def api_download_final_report_tex(project_id: str) -> FileResponse:
 @app.get("/api/projects/{project_id}/download/final-report-typeset.pdf")
 async def api_download_typeset_pdf(project_id: str) -> FileResponse:
     state = _load_state(project_id)
-    pdf_path = (
-        Path(state.final_report_typeset_pdf_path)
-        if state.final_report_typeset_pdf_path
-        else state.project_dir / FILE_FINAL_REPORT_TYPESET_PDF
-    )
-    if not pdf_path.exists():
-        final_report = Path(state.final_report_path) if state.final_report_path else None
-        if not final_report or not final_report.exists():
-            raise HTTPException(status_code=404, detail="最终报告还没有生成")
-        artifacts = await generate_typeset_artifacts(
-            topic=state.topic,
-            project_dir=state.project_dir,
-            final_report_path=final_report,
-        )
-        if not artifacts["pdf_path"]:
-            raise HTTPException(
-                status_code=409,
-                detail="已生成 LaTeX 源文件，但本机缺少 xelatex/lualatex，无法编译高级 PDF",
-            )
-        pdf_path = artifacts["pdf_path"]
-        state.final_report_tex_path = str(artifacts["tex_path"])
-        state.final_report_typeset_pdf_path = str(pdf_path)
-        state.save()
-
+    pdf_path = await _final_report_pdf_path(state)
     return FileResponse(
         pdf_path,
         media_type="application/pdf",
-        filename=f"{project_id}_final_report_typeset.pdf",
+        filename=f"{project_id}_final_report.pdf",
     )
 
 

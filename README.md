@@ -29,13 +29,14 @@ Orchestrator（状态机 · 10 个阶段 · 3 个检查点）
   ├── Agent2 · 数据搜集    → 源分层清单                        ⏸ 用户确认
   ├── Agent2↔3 · 循环      → 采集-验证（≤3轮）→ 源终稿        ⏸ 用户确认
   ├── Agent4 · 深度分析    → 全方位分析（波特五力/SWOT/...）
-  └── Agent5 · 排版交付    → 最终报告 (Markdown)
+  └── Agent5 · 排版交付    → Markdown + 图表清单 + 安全 HTML + 正式 PDF
 ```
 
 ## 环境要求
 
 - **Python >= 3.10**（推荐 3.11+）
 - 任何 **OpenAI Chat Completions API 兼容服务**（OpenAI / DeepSeek / Qwen / Ollama / vLLM）
+- 正式 PDF 需要 **XeLaTeX**；Pandoc 由 Python 依赖 `pypandoc-binary` 提供，也可使用系统 Pandoc
 - 无需 Anthropic API Key
 
 ## 安装
@@ -108,7 +109,7 @@ python -m research_agent new "新能源汽车行业"
 1. 创建项目目录 `projects/新能源汽车行业_20260424/`
 2. 启动 Agent1 与你多轮对话，澄清调研需求
 3. 生成提纲 → 你确认后 → 继续推进后续阶段
-4. 全部完成后输出最终报告
+4. 全部完成后输出 Markdown、真实图表、安全 HTML、LaTeX 源文件和统一正式 PDF
 
 ### 断点续跑
 
@@ -161,7 +162,12 @@ research-agent/
 │       │   └── ...
 │       ├── 03_validation_report.md
 │       ├── 04_analysis.md
-│       └── 05_final_report.md
+│       ├── 05_final_report.md
+│       ├── 05_chart_manifest.json
+│       ├── 05_charts/              # SVG / PDF / PNG 图表
+│       ├── 05_final_report.html
+│       ├── 05_final_report.tex
+│       └── 05_final_report.pdf
 └── tests/
     └── test_state_machine.py
 ```
@@ -174,7 +180,7 @@ research-agent/
 | **Agent2 数据搜集** | 信息源识别+S/A/B/D分层 + 按级采集 | Read, Write, WebSearch, WebFetch | `02_sources_draft.md` + `round_N.md` |
 | **Agent3 信息验证** | 原文回查、EvidenceRecord、冲突检测、淘汰低质源 | ReadProjectSource, RecordProjectEvidence, Write | `feedback_round_N.json` + `03_validation_report.md` |
 | **Agent4 深度分析** | 波特五力/SWOT/PEST + 定量分析 | Read, Write, WebSearch, WebFetch | `04_analysis.md` |
-| **Agent5 排版交付** | 结构化排版 + 脚注 + 执行摘要 | Read, Write, WebSearch | `05_final_report.md` |
+| **Agent5 排版交付** | 加载项目券商排版 Skill，生成结构、图表清单、执行摘要与交付物 | Read, Write | `05_final_report.md` + `05_chart_manifest.json` + HTML/TeX/PDF |
 
 ## 信息源分层标准
 
@@ -201,6 +207,13 @@ research-agent/
 | `SEARCH_API_KEY` | — | 搜索 API Key（DuckDuckGo 不需要） |
 | `STRATEGIST_MAX_ROUNDS` | `5` | Agent1 多轮对话上限 |
 | `MAX_COLLECT_ROUNDS` | `3` | Agent2↔3 采集-验证循环上限 |
+| `REPORT_FORMATTING_SKILL` | `brokerage-report-formatting` | Agent5 加载的项目内白名单排版 Skill |
+| `REPORT_THEME` | `brokerage_research_v1` | 固定券商研报视觉主题 |
+| `REPORT_MAX_CHARTS` | `20` | 单份报告图表数量上限 |
+| `REPORT_ENABLE_LLM_CHART_FALLBACK` | `true` | 是否允许特殊图表使用受限 Vega-Lite 兜底 |
+| `REPORT_PANDOC_BIN` | `pandoc` | Pandoc 命令；未找到时自动使用 Python bundle |
+| `REPORT_LATEX_ENGINE` | `xelatex` | 正式 PDF 的 LaTeX 引擎 |
+| `REPORT_RENDER_TIMEOUT` | `120` | 单个报告渲染步骤超时（秒） |
 | `SOURCE_DATA_DIR` | `.data/sources` | 材料目录、SQLite catalog 和不可变原文件存储 |
 | `SOURCE_EMBEDDING_BASE_URL` | — | OpenAI 兼容 Embeddings API 地址；不配置则只使用离线检索 |
 | `SOURCE_EMBEDDING_API_KEY` | — | Embeddings API Key |

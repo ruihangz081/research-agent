@@ -12,7 +12,9 @@ from rich.console import Console
 
 from .. import config
 from ..agent_loop import AgentOptions, run_agent
+from ..agent_skills import load_project_skill
 from ..llm import LLMClient
+from ..report_charts import load_chart_manifest
 from ..report_layout import generate_typeset_artifacts
 from ..sources.api import build_runtime
 from ..sources.citations import render_citation, validate_report_citations
@@ -79,8 +81,10 @@ async def run_formatting(state: "ProjectState") -> Path:
         else None
     )
     final_report_path = state.project_dir / config.FILE_FINAL_REPORT
+    chart_manifest_path = state.project_dir / config.FILE_CHART_MANIFEST
 
-    system_prompt = _load_formatter_prompt()
+    skill = load_project_skill(config.REPORT_FORMATTING_SKILL)
+    system_prompt = _load_formatter_prompt() + skill.prompt_context()
     system_prompt += source_context(state)
     replacements = {
         "{outline_path}": str(outline_path),
@@ -88,6 +92,7 @@ async def run_formatting(state: "ProjectState") -> Path:
         "{sources_final_path}": str(sources_final_path),
         "{validation_report_path}": str(validation_report_path or "（无）"),
         "{final_report_path}": str(final_report_path),
+        "{chart_manifest_path}": str(chart_manifest_path),
     }
     for k, v in replacements.items():
         system_prompt = system_prompt.replace(k, v)
@@ -100,6 +105,8 @@ async def run_formatting(state: "ProjectState") -> Path:
         f"- 最终源清单：`{sources_final_path}`\n"
         f"- 验证报告：`{validation_report_path}`\n"
         f"- 最终报告输出路径：`{final_report_path}`\n"
+        f"- 图表清单输出路径：`{chart_manifest_path}`\n"
+        f"- 已加载排版 Skill：`{skill.name}`\n"
     )
     output_preference = state.notes.get("output_preference", config.OUTPUT_PREFERENCE)
     preference_instructions = {
@@ -139,7 +146,8 @@ async def run_formatting(state: "ProjectState") -> Path:
             user_prompt=(
                 f"请将深度分析排版为最终报告。"
                 f"读取提纲、分析报告、源清单，"
-                f"产出完整可独立阅读的行业调研报告到 `{final_report_path}`。"
+                f"产出完整可独立阅读的行业调研报告到 `{final_report_path}`，"
+                f"并把真实图表清单写到 `{chart_manifest_path}`。"
             ),
             options=options,
             llm_client=client,
@@ -150,27 +158,35 @@ async def run_formatting(state: "ProjectState") -> Path:
 
     if not final_report_path.exists():
         raise RuntimeError(f"Agent5 未能生成最终报告：{final_report_path}")
+    if not chart_manifest_path.exists():
+        raise RuntimeError(f"Agent5 未能生成图表清单：{chart_manifest_path}")
+    load_chart_manifest(chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS)
 
     _finalize_evidence_appendix(state, final_report_path)
+    state.chart_manifest_path = str(chart_manifest_path)
 
     console.print(f"\n[green]✓ 最终报告已生成：{final_report_path.name}[/green]")
 
     try:
-        console.print("[cyan]正在生成 LaTeX 排版交付物...[/cyan]")
+        console.print("[cyan]正在生成券商研报图表、HTML 与正式 PDF...[/cyan]")
         artifacts = await generate_typeset_artifacts(
             topic=state.topic,
             project_dir=state.project_dir,
             final_report_path=final_report_path,
         )
         state.final_report_tex_path = str(artifacts["tex_path"])
+        state.final_report_html_path = str(artifacts["html_path"])
+        state.final_report_pdf_path = (
+            str(artifacts["pdf_path"]) if artifacts["pdf_path"] else None
+        )
         if artifacts["pdf_path"]:
             state.final_report_typeset_pdf_path = str(artifacts["pdf_path"])
             console.print(
-                f"[green]✓ LaTeX 高级 PDF 已生成：{artifacts['pdf_path'].name}[/green]"
+                f"[green]✓ 正式 PDF 已生成：{artifacts['pdf_path'].name}[/green]"
             )
         else:
             console.print(
-                "[yellow]已生成 LaTeX 源文件；本机未检测到 xelatex/lualatex，"
+                "[yellow]已生成 HTML 与 LaTeX 源文件；本机未检测到配置的 LaTeX 引擎，"
                 "暂未自动编译 PDF。[/yellow]"
             )
         state.save()

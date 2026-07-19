@@ -1,0 +1,36 @@
+\documentclass[UTF8,fontset=fandol,11pt]{ctexart}
+\usepackage{brokerage-report}
+\usepackage{longtable,booktabs,array,graphicx,hyperref}
+\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\providecommand{\pandocbounded}[1]{\noindent\begingroup\setkeys{Gin}{width=\linewidth,keepaspectratio}#1\endgroup}
+\newcounter{none}
+$if(highlighting-macros)$
+$highlighting-macros$
+$endif$
+\hypersetup{colorlinks=true,linkcolor=BrokerBlue,urlcolor=BrokerBlue,citecolor=BrokerBlue}
+\title{$title$}
+$if(subtitle)$\newcommand{\ReportSubtitle}{$subtitle$}$else$\newcommand{\ReportSubtitle}{深度研究报告}$endif$
+$if(date)$\date{$date$}$else$\date{\today}$endif$
+\begin{document}
+\begin{titlepage}
+  \thispagestyle{empty}
+  \vspace*{22mm}
+  \noindent{\color{BrokerBlue}\rule{\linewidth}{2.2pt}}\\[13mm]
+  {\fontsize{25}{34}\selectfont\bfseries $title$\par}
+  \vspace{7mm}
+  {\Large\color{BrokerMuted}\ReportSubtitle\par}
+  \vfill
+  \begin{tabular}{@{}ll@{}}
+    \textbf{报告日期} & $date$ \\
+    \textbf{报告版本} & v1.0 \\
+    \textbf{生成方式} & Research Agent 自动生成 \\
+  \end{tabular}
+  \par\vspace{14mm}
+  {\small\color{BrokerMuted}本报告基于经验证的公开信息与用户授权材料整理，仅供研究参考。\par}
+  \vspace{5mm}
+  \noindent{\color{BrokerGold}\rule{\linewidth}{1.1pt}}
+\end{titlepage}
+\tableofcontents
+\clearpage
+$body$
+\end{document}

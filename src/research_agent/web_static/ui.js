@@ -124,14 +124,29 @@ const Lumitrace = (() => {
     let inCode = false;
     let code = [];
     let list = [];
+    let table = [];
     const inline = (value) => escapeHtml(value).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
     const flushList = () => {
       if (!list.length) return;
       blocks.push(`<ul>${list.map((item) => `<li>${item}</li>`).join("")}</ul>`);
       list = [];
     };
+    const flushTable = () => {
+      if (!table.length) return;
+      const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+      const separator = table[1] && cells(table[1]).every((cell) => /^:?-{3,}:?$/.test(cell));
+      if (!separator) table.forEach((row) => blocks.push(`<p>${inline(row)}</p>`));
+      else {
+        const header = cells(table[0]);
+        const rows = table.slice(2).map(cells);
+        blocks.push(`<div class="table-scroll"><table><thead><tr>${header.map((cell) => `<th>${inline(cell)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+      }
+      table = [];
+    };
     for (const rawLine of text.split("\n")) {
       const line = rawLine.trimEnd();
+      if (!inCode && /^\s*\|.*\|\s*$/.test(line)) { flushList(); table.push(line); continue; }
+      flushTable();
       if (line.startsWith("```")) {
         if (inCode) {
           blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
@@ -146,6 +161,7 @@ const Lumitrace = (() => {
       else if (/^[-*]\s+/.test(line)) list.push(inline(line.replace(/^[-*]\s+/, "")));
       else { flushList(); blocks.push(`<p>${inline(line)}</p>`); }
     }
+    flushTable();
     flushList();
     if (inCode) blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
     return `<div class="markdown">${blocks.join("")}</div>`;

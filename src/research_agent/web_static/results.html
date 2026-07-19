@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>成果中心 · 溯光 Lumitrace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260719" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260719-report" />
   </head>
   <body>
     <div class="app-shell">
@@ -37,10 +37,9 @@
               </section>
               <section class="panel delivery-card">
                 <div><p class="eyebrow">导出与下载</p><h3>交付文件</h3></div>
-                <button id="downloadPdf" class="download-row" type="button"><span><strong>普通 PDF 下载</strong><small>标准排版的 PDF 文档</small></span><i id="pdfIcon"></i></button>
-                <button id="typeset" class="download-row" type="button"><span><strong>LaTeX 排版</strong><small>生成高级排版交付物</small></span><i id="typesetIcon"></i></button>
+                <button id="downloadPdf" class="download-row" type="button"><span><strong>正式 PDF 下载</strong><small>统一券商研报排版</small></span><i id="pdfIcon"></i></button>
+                <button id="typeset" class="download-row" type="button"><span><strong>生成 / 刷新正式版</strong><small>生成图表、HTML、TeX 与 PDF</small></span><i id="typesetIcon"></i></button>
                 <button id="downloadTex" class="download-row" type="button"><span><strong>TeX 下载</strong><small>下载 .tex 源文件</small></span><i id="texIcon"></i></button>
-                <button id="downloadTypesetPdf" class="download-row" type="button"><span><strong>高级 PDF 下载</strong><small>LaTeX 高质量排版</small></span><i id="typesetPdfIcon"></i></button>
               </section>
               <section id="deliveryWarning" class="warning-box hidden"></section>
             </aside>
@@ -48,7 +47,7 @@
         </div>
       </main>
     </div>
-    <script src="/static/ui.js?v=20260719"></script>
-    <script src="/static/results.js?v=20260719"></script>
+    <script src="/static/ui.js?v=20260719-report"></script>
+    <script src="/static/results.js?v=20260719-report"></script>
   </body>
 </html>
