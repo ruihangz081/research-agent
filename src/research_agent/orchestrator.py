@@ -47,6 +47,7 @@ async def _safe_run(
     """执行一个阶段的 agent 调用，附带重试 + 异常兜底。
 
     - 成功：返回 agent 函数的返回值
+    - 确定性门槛阻断：保存状态后直接抛出，不重试
     - 失败且重试耗尽：保存状态后 raise PipelineError
     """
     last_err: Exception | None = None
@@ -55,6 +56,11 @@ async def _safe_run(
             return await fn(*args, **kwargs)
         except KeyboardInterrupt:
             # 用户中断，直接保存状态抛出
+            state.save()
+            raise
+        except PipelineError:
+            # Deterministic gates are not transient agent failures. Retrying would
+            # waste model calls and mislabel the blocked stage as an agent crash.
             state.save()
             raise
         except Exception as e:
@@ -88,6 +94,12 @@ class PipelineError(RuntimeError):
     pass
 
 
+class DeliveryBlockedError(PipelineError):
+    """Delivery is paused until deterministic evidence requirements are met."""
+
+    pass
+
+
 def _deterministic_convergence(state: ProjectState, feedback: validator.ValidationFeedback) -> bool:
     """A model convergence claim is advisory; persisted evidence decides readiness."""
     service, _ = build_runtime(config.SOURCE_DATA_DIR)
@@ -109,7 +121,12 @@ def _deterministic_convergence(state: ProjectState, feedback: validator.Validati
         reasons.append(f"unresolved feedback conflicts: {', '.join(unresolved_conflicts)}")
     if not feedback.converged:
         reasons.append("validator did not declare convergence")
-    ready = feedback.converged and not feedback.gap_list and not unresolved_conflicts and gate.passed
+    # The validator may retain known, non-material limitations (for example a
+    # paywalled industry report) in gap_list while still declaring convergence.
+    # Keep those limitations visible, but do not turn every residual gap into a
+    # hard stop. Persisted evidence and unresolved conflicts remain deterministic
+    # blockers; the validator is responsible for deciding whether a gap is major.
+    ready = feedback.converged and not unresolved_conflicts and gate.passed
     state.notes["quality_gate"] = gate.status.value
     state.notes["quality_gate_reasons"] = sorted(set(reasons))
     return ready
@@ -118,12 +135,55 @@ def _deterministic_convergence(state: ProjectState, feedback: validator.Validati
 def _assert_delivery_ready(state: ProjectState) -> None:
     service, _ = build_runtime(config.SOURCE_DATA_DIR)
     project_id = state.project_dir.name
-    evidence = service.repository.list_evidence(project_id)
-    questions = sorted({item.research_question_id for item in evidence if item.verification_status == VerificationStatus.SUPPORTED})
-    gate = service.quality_gate(project_id, [ResearchRequirement(question_id=value) for value in questions])
-    service.repository.close()
+    try:
+        sources = service.list_sources(project_id, include_superseded=True)
+        evidence = service.repository.list_evidence(project_id)
+        questions = sorted({item.research_question_id for item in evidence if item.verification_status == VerificationStatus.SUPPORTED})
+        gate = service.quality_gate(project_id, [ResearchRequirement(question_id=value) for value in questions])
+    finally:
+        service.repository.close()
     if not gate.passed:
-        raise PipelineError(f"确定性质量门槛阻断交付：{gate.status.value}: {'; '.join(gate.reasons)}")
+        materials_url = f"/materials?project={project_id}"
+        state.notes["quality_gate"] = gate.status.value
+        state.notes["quality_gate_reasons"] = gate.reasons
+        state.notes["delivery_blocked_stage"] = "evidence"
+        state.notes["delivery_materials_url"] = materials_url
+        state.save()
+        if not sources:
+            recovery = (
+                "项目尚未形成可验证来源。再次点击“继续”或运行 resume，系统会回到 Agent2↔Agent3，"
+                "自动捕获公开网页并生成 EvidenceRecord；"
+                f"如有私有材料，也可选地通过 `{materials_url}` 补充。"
+            )
+        else:
+            recovery = (
+                f"当前项目已有 {len(sources)} 份材料，但没有形成合格证据。"
+                "再次点击“继续”或运行 resume，系统会回到 Agent2↔Agent3 重新验证。"
+            )
+        raise DeliveryBlockedError(
+            "交付前证据门槛阻断："
+            f"{gate.status.value}: {'; '.join(gate.reasons)}。"
+            f"{recovery} Agent5 未启动，本错误不会重试。"
+        )
+
+
+def recover_blocked_delivery(state: ProjectState) -> bool:
+    """Rewind an invalid legacy delivery state for web or uploaded evidence."""
+    if state.stage not in {Stage.ANALYZING, Stage.FORMATTING}:
+        return False
+    if state.notes.get("delivery_blocked_stage") != "evidence" and state.notes.get("quality_gate") != "blocked":
+        return False
+
+    state.collect_round = 0
+    state.converged = False
+    state.last_feedback_path = None
+    state.sources_final_path = None
+    state.notes.pop("delivery_blocked_stage", None)
+    state.notes["quality_gate"] = "revalidating"
+    state.notes["quality_gate_reasons"] = []
+    state.notes["delivery_recovery"] = "rewound_to_collecting_and_validating"
+    state.advance_to(Stage.COLLECTING_AND_VALIDATING)
+    return True
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -316,6 +376,7 @@ async def _run_pipeline_inner(state: ProjectState) -> None:
 
     # ================== 阶段 5: Agent5 排版交付 ==================
     if state.stage == Stage.FORMATTING:
+        _assert_delivery_ready(state)
         final_report_path = await _safe_run(
             "Agent5·排版交付", state,
             formatter.run_formatting, state,

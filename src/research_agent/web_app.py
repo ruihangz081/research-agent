@@ -18,7 +18,14 @@ from . import config
 from .agent_loop import AgentOptions, run_agent
 from .agents import analyst, collector, formatter, strategist, validator
 from .llm import ChatMessage, LLMClient
-from .orchestrator import _safe_run
+from .orchestrator import (
+    DeliveryBlockedError,
+    PipelineError,
+    _assert_delivery_ready,
+    _deterministic_convergence,
+    _safe_run,
+    recover_blocked_delivery,
+)
 from .report_layout import (
     FILE_FINAL_REPORT_TEX,
     generate_typeset_artifacts,
@@ -402,8 +409,13 @@ async def _run_until_pause(project_id: str) -> None:
         job["status"] = "running"
         try:
             state = _load_state(project_id)
+            if recover_blocked_delivery(state):
+                _log(project_id, "检测到旧的无证据交付状态，已回到采集验证阶段")
             await _run_state_machine(project_id, state)
             job["status"] = "idle"
+        except DeliveryBlockedError as exc:
+            job["status"] = "idle"
+            _log(project_id, f"交付已暂停：{exc}")
         except Exception as exc:
             job["status"] = "error"
             _log(project_id, f"运行失败：{exc}")
@@ -479,11 +491,18 @@ async def _run_state_machine(project_id: str, state: ProjectState) -> None:
                 )
                 state.collect_round = round_idx
                 state.last_feedback_path = str(fb_path)
-                state.converged = fb_obj.converged
+                state.converged = _deterministic_convergence(state, fb_obj)
                 state.save()
                 _log(
                     project_id,
-                    f"第 {round_idx} 轮完成，收敛={fb_obj.converged}",
+                    f"第 {round_idx} 轮完成，"
+                    f"模型收敛={fb_obj.converged}，证据收敛={state.converged}",
+                )
+
+            if not state.converged:
+                raise PipelineError(
+                    f"达到最大轮次 {max_rounds}，但证据质量门槛未通过："
+                    f"{'; '.join(state.notes.get('quality_gate_reasons', []))}"
                 )
 
             final_fb = validator.load_feedback(Path(state.last_feedback_path))
@@ -507,6 +526,8 @@ async def _run_state_machine(project_id: str, state: ProjectState) -> None:
             state.advance_to(Stage.FORMATTING)
 
         if state.stage == Stage.FORMATTING:
+            _log(project_id, "正在检查交付证据门槛")
+            _assert_delivery_ready(state)
             _log(project_id, "Agent5 正在排版最终报告")
             path = await _safe_run(
                 "Agent5·排版交付", state, formatter.run_formatting, state
@@ -669,6 +690,11 @@ async def api_approval(project_id: str, req: ApprovalRequest) -> dict[str, Any]:
             _log(project_id, "信息源草案已驳回，准备重跑")
     elif state.stage == Stage.AWAIT_FINAL_SOURCE_APPROVAL:
         if req.approved:
+            try:
+                _assert_delivery_ready(state)
+            except PipelineError as exc:
+                _log(project_id, str(exc))
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             state.advance_to(Stage.ANALYZING)
             _log(project_id, "最终源清单已通过")
         else:

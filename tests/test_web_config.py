@@ -5,6 +5,7 @@ import pytest
 
 from research_agent import config
 from research_agent import web_app
+from research_agent.state import ProjectState, Stage
 
 
 @pytest.mark.anyio
@@ -126,3 +127,50 @@ async def test_workspace_config_rejects_relative_paths() -> None:
         )
 
     assert response.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_final_source_approval_is_blocked_without_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
+    web_app.JOBS.clear()
+    web_app.LOCKS.clear()
+    state = ProjectState(
+        topic="blocked",
+        date_str="20260720",
+        stage=Stage.AWAIT_FINAL_SOURCE_APPROVAL,
+    )
+    state.save()
+
+    transport = httpx.ASGITransport(app=web_app.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/projects/{state.project_dir.name}/approval",
+            json={"approved": True},
+        )
+
+    assert response.status_code == 409
+    assert ProjectState.load(state.project_dir).stage == Stage.AWAIT_FINAL_SOURCE_APPROVAL
+
+
+@pytest.mark.anyio
+async def test_web_delivery_gate_pauses_instead_of_reporting_agent_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
+    web_app.JOBS.clear()
+    web_app.LOCKS.clear()
+    state = ProjectState(topic="blocked", date_str="20260720", stage=Stage.FORMATTING)
+    state.save()
+
+    await web_app._run_until_pause(state.project_dir.name)
+
+    job = web_app.JOBS[state.project_dir.name]
+    assert job["status"] == "idle"
+    assert job["message"].startswith("交付已暂停：")
+    assert "Agent5 未启动，本错误不会重试" in job["message"]

@@ -19,6 +19,7 @@ from ..report_layout import generate_typeset_artifacts
 from ..sources.api import build_runtime
 from ..sources.citations import render_citation, validate_report_citations
 from ..sources.enums import VerificationStatus
+from ..sources.models import EvidenceRecord, SourceAsset
 from ..sources.quality import ResearchRequirement
 from ..tools import default_registry
 from .source_context import source_context
@@ -31,28 +32,49 @@ console = Console()
 _PROMPT_FORMATTER = Path(__file__).parent / "prompts" / "formatter.md"
 
 
-def _finalize_evidence_appendix(state: "ProjectState", report_path: Path) -> None:
+def _require_delivery_evidence(
+    state: "ProjectState",
+) -> tuple[list[EvidenceRecord], dict[str, SourceAsset]]:
     service, _ = build_runtime(config.SOURCE_DATA_DIR)
     project_id = state.project_dir.name
-    evidence = service.repository.list_evidence(project_id)
-    supported = [item for item in evidence if item.verification_status == VerificationStatus.SUPPORTED]
-    requirements = [ResearchRequirement(question_id=value) for value in sorted({item.research_question_id for item in supported})]
-    gate = service.quality_gate(project_id, requirements)
+    try:
+        evidence = service.repository.list_evidence(project_id)
+        supported = [
+            item
+            for item in evidence
+            if item.verification_status == VerificationStatus.SUPPORTED
+        ]
+        requirements = [
+            ResearchRequirement(question_id=value)
+            for value in sorted({item.research_question_id for item in supported})
+        ]
+        gate = service.quality_gate(project_id, requirements)
+        sources = {
+            source.source_id: source
+            for source in service.list_sources(project_id, include_superseded=True)
+        }
+    finally:
+        service.repository.close()
     state.notes["quality_gate"] = gate.status.value
     state.notes["quality_gate_reasons"] = gate.reasons
-    sources = {source.source_id: source for source in service.list_sources(project_id, include_superseded=True)}
     valid, errors = validate_report_citations(supported, sources)
-    service.repository.close()
     if not gate.passed:
         state.save()
         raise RuntimeError(f"quality gate blocked final delivery: {gate.status.value}: {gate.reasons}")
     if not valid:
         raise RuntimeError(f"citation audit failed: {errors}")
+    return supported, sources
+
+
+def _finalize_evidence_appendix(state: "ProjectState", report_path: Path) -> None:
+    supported, sources = _require_delivery_evidence(state)
     report = report_path.read_text(encoding="utf-8")
     appendix = ["", "---", "", "## 可追溯证据索引", ""]
     for item in supported:
-        citation = render_citation(item, sources[item.source_id])
-        appendix.append(f"- {citation} **{item.claim}** — {item.excerpt}")
+        source = sources[item.source_id]
+        citation = render_citation(item, source)
+        origin = f"（[原文]({source.origin_url})）" if source.origin_url else ""
+        appendix.append(f"- {citation} **{item.claim}** — {item.excerpt}{origin}")
     marker = "## 可追溯证据索引"
     if marker in report:
         report = report.split(marker, 1)[0].rstrip()
@@ -63,6 +85,26 @@ def _load_formatter_prompt() -> str:
     return _PROMPT_FORMATTER.read_text(encoding="utf-8")
 
 
+def _can_reuse_generated(
+    final_report_path: Path,
+    chart_manifest_path: Path,
+    analysis_path: Path,
+) -> bool:
+    """Reuse Agent5 output only when both files are current and valid."""
+    if not (
+        final_report_path.is_file()
+        and chart_manifest_path.is_file()
+        and final_report_path.stat().st_mtime >= analysis_path.stat().st_mtime
+        and chart_manifest_path.stat().st_mtime >= analysis_path.stat().st_mtime
+    ):
+        return False
+    try:
+        load_chart_manifest(chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS)
+    except (ValueError, OSError):
+        return False
+    return True
+
+
 async def run_formatting(state: "ProjectState") -> Path:
     """排版生成最终报告。"""
     if not state.outline_path:
@@ -71,6 +113,10 @@ async def run_formatting(state: "ProjectState") -> Path:
         raise RuntimeError("需要 analysis.md（Agent4 产出）")
     if not state.sources_final_path:
         raise RuntimeError("需要 sources_final.md")
+
+    # Fail before invoking the LLM. A formatter cannot repair missing source
+    # provenance, and retrying it only regenerates the same blocked artifacts.
+    _require_delivery_evidence(state)
 
     outline_path = Path(state.outline_path)
     analysis_path = Path(state.analysis_path)
@@ -135,26 +181,34 @@ async def run_formatting(state: "ProjectState") -> Path:
     async def _on_text(text: str) -> None:
         console.print(text, style="bright_white", end="")
 
-    async with LLMClient(
-        base_url=config.LLM_BASE_URL,
-        api_key=config.LLM_API_KEY,
-        model=config.LLM_MODEL,
-        timeout=config.LLM_TIMEOUT,
-        max_retries=config.LLM_MAX_RETRIES,
-    ) as client:
-        await run_agent(
-            user_prompt=(
-                f"请将深度分析排版为最终报告。"
-                f"读取提纲、分析报告、源清单，"
-                f"产出完整可独立阅读的行业调研报告到 `{final_report_path}`，"
-                f"并把真实图表清单写到 `{chart_manifest_path}`。"
-            ),
-            options=options,
-            llm_client=client,
-            tool_registry=default_registry,
-            on_assistant_text=_on_text,
-        )
-    console.print()
+    reuse_generated = _can_reuse_generated(
+        final_report_path,
+        chart_manifest_path,
+        analysis_path,
+    )
+    if not reuse_generated:
+        async with LLMClient(
+            base_url=config.LLM_BASE_URL,
+            api_key=config.LLM_API_KEY,
+            model=config.LLM_MODEL,
+            timeout=config.LLM_TIMEOUT,
+            max_retries=config.LLM_MAX_RETRIES,
+        ) as client:
+            await run_agent(
+                user_prompt=(
+                    f"请将深度分析排版为最终报告。"
+                    f"读取提纲、分析报告、源清单，"
+                    f"产出完整可独立阅读的行业调研报告到 `{final_report_path}`，"
+                    f"并把真实图表清单写到 `{chart_manifest_path}`。"
+                ),
+                options=options,
+                llm_client=client,
+                tool_registry=default_registry,
+                on_assistant_text=_on_text,
+            )
+        console.print()
+    else:
+        console.print("[dim]复用已生成的 Markdown 和图表清单，继续排版交付。[/dim]")
 
     if not final_report_path.exists():
         raise RuntimeError(f"Agent5 未能生成最终报告：{final_report_path}")
@@ -163,7 +217,9 @@ async def run_formatting(state: "ProjectState") -> Path:
     load_chart_manifest(chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS)
 
     _finalize_evidence_appendix(state, final_report_path)
+    state.final_report_path = str(final_report_path)
     state.chart_manifest_path = str(chart_manifest_path)
+    state.save()
 
     console.print(f"\n[green]✓ 最终报告已生成：{final_report_path.name}[/green]")
 
@@ -189,10 +245,11 @@ async def run_formatting(state: "ProjectState") -> Path:
                 "[yellow]已生成 HTML 与 LaTeX 源文件；本机未检测到配置的 LaTeX 引擎，"
                 "暂未自动编译 PDF。[/yellow]"
             )
+        state.notes.pop("latex_typeset_error", None)
         state.save()
     except Exception as e:
         state.notes["latex_typeset_error"] = str(e)
         state.save()
-        console.print(f"[yellow]LaTeX 排版交付物生成失败：{e}[/yellow]")
+        raise RuntimeError(f"Agent5 排版交付物生成失败：{e}") from e
 
     return final_report_path

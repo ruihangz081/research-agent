@@ -157,6 +157,8 @@ class SourceAsset(BaseModel):
     confidentiality: Literal["public", "internal", "restricted"] = "internal"
     tags: list[str] = Field(default_factory=list)
     user_notes: str = ""
+    origin_url: str | None = None
+    retrieved_at: datetime | None = None
     parser_version: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

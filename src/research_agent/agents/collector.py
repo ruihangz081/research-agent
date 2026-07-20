@@ -147,7 +147,11 @@ async def run_collection_round(
     raw_dir.mkdir(parents=True, exist_ok=True)
     round_output = raw_dir / config.FILE_RAW_ROUND.format(n=round_idx)
 
-    previous_rounds = sorted(raw_dir.glob("round_*.md"))
+    previous_rounds = [
+        raw_dir / config.FILE_RAW_ROUND.format(n=index)
+        for index in range(1, round_idx)
+        if (raw_dir / config.FILE_RAW_ROUND.format(n=index)).exists()
+    ]
     previous_rounds_str = "\n".join(f"  - {p}" for p in previous_rounds) or "  （首轮，无历史）"
 
     system_prompt = _load_round_prompt()
@@ -158,6 +162,7 @@ async def run_collection_round(
         "{feedback_json}": str(feedback_path) if feedback_path else "（首轮，无反馈）",
         "{round_output_path}": str(round_output),
         "{N}": str(round_idx),
+        "{project_id}": state.project_dir.name,
     }
     for k, v in replacements.items():
         system_prompt = system_prompt.replace(k, v)
@@ -176,7 +181,7 @@ async def run_collection_round(
     options = AgentOptions(
         system_prompt=system_prompt,
         model=config.LLM_MODEL,
-        allowed_tools=["Read", "Write", "WebSearch", "WebFetch", "ListProjectSources", "SearchProjectSources", "ReadProjectSource"],
+        allowed_tools=["Read", "Write", "WebSearch", "WebFetch", "CaptureProjectWebSource", "ListProjectSources", "SearchProjectSources", "ReadProjectSource"],
         cwd=str(state.project_dir),
         max_turns=40,
     )

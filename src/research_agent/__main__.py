@@ -70,6 +70,12 @@ def _cmd_resume(args: argparse.Namespace) -> int:
         f"[dim]当前阶段：{state.stage.value}[/dim]\n"
     )
 
+    if orchestrator.recover_blocked_delivery(state):
+        console.print(
+            "[yellow]检测到旧的无证据交付状态；"
+            "已回到采集验证阶段。[/yellow]\n"
+        )
+
     anyio.run(orchestrator.run_pipeline, state)
     return 0
 

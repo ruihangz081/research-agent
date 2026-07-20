@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, Callable, get_type_hints
+from typing import Any, Callable, Literal, get_type_hints
 
 # Python type → JSON schema type
 _TYPE_MAP: dict[type, str] = {
@@ -21,6 +21,10 @@ def _python_type_to_json(tp: Any) -> dict[str, Any]:
 
     # list[X]
     origin = getattr(tp, "__origin__", None)
+    if origin is Literal:
+        values = list(getattr(tp, "__args__", ()))
+        value_type = type(values[0]) if values else str
+        return {"type": _TYPE_MAP.get(value_type, "string"), "enum": values}
     if origin is list:
         args = getattr(tp, "__args__", ())
         item_schema = _python_type_to_json(args[0]) if args else {"type": "string"}

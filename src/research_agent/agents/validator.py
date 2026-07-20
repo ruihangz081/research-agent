@@ -87,7 +87,11 @@ async def run_validation(
         else Path(state.sources_draft_path)
     )
 
-    previous_rounds = sorted(raw_dir.glob("round_*.md"))
+    previous_rounds = [
+        raw_dir / config.FILE_RAW_ROUND.format(n=index)
+        for index in range(1, round_idx)
+        if (raw_dir / config.FILE_RAW_ROUND.format(n=index)).exists()
+    ]
     previous_rounds_str = (
         "\n".join(f"  - {p}" for p in previous_rounds if p != raw_round_path)
         or "  （首轮，无其他历史）"
@@ -204,7 +208,11 @@ async def finalize_sources(
     retained = set(final_feedback.retain_sources)
     dropped_cumulative: set[str] = set()
     raw_dir = state.project_dir / config.FILE_RAW_DATA_DIR
-    for fb_file in sorted(raw_dir.glob("feedback_round_*.json")):
+    feedback_files = [
+        raw_dir / config.FILE_FEEDBACK_ROUND.format(n=index)
+        for index in range(1, state.collect_round + 1)
+    ]
+    for fb_file in feedback_files:
         try:
             fb = load_feedback(fb_file)
             dropped_cumulative.update(fb.drop_sources)
