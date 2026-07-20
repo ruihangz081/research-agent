@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>成果中心 · 溯光 Lumitrace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260719-report" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260720-markdown" />
   </head>
   <body>
     <div class="app-shell">
@@ -24,9 +24,9 @@
           <div id="resultsContent" class="results-layout hidden">
             <div class="panel" style="overflow:hidden">
               <div class="panel-header"><h2 id="previewTitle">成果预览</h2><span id="previewMeta" class="status-pill">等待选择</span></div>
-              <div style="display:grid;grid-template-columns:260px minmax(0,1fr);min-height:780px">
+              <div class="results-preview-layout">
                 <nav id="resultList" class="results-list" aria-label="成果列表"></nav>
-                <div style="overflow:auto;background:#f6f8fd;padding:26px"><article id="documentPreview" class="document-sheet"></article></div>
+                <div id="previewScroller" class="document-preview-scroller"><article id="documentPreview" class="document-sheet"></article></div>
               </div>
             </div>
 
@@ -47,7 +47,7 @@
         </div>
       </main>
     </div>
-    <script src="/static/ui.js?v=20260719-report"></script>
-    <script src="/static/results.js?v=20260719-report"></script>
+    <script src="/static/ui.js?v=20260720-markdown"></script>
+    <script src="/static/results.js?v=20260720-markdown"></script>
   </body>
 </html>
