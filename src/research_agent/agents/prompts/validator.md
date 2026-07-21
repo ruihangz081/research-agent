@@ -124,7 +124,10 @@
 
 ## 重要规则
 
-- 对每个准备保留的事实，必须先用 `ReadProjectSource` 回查原文，再调用 `RecordProjectEvidence` 保存结构化证据；`locator_json` 必须原样使用读取结果中的 locator
+- `source_id` 和 `chunk_id` 是两种不同的 ID，禁止把 `src_...` 形式的 `source_id` 传入 `chunk_id`
+- 对每个准备保留的事实，先调用 `SearchProjectSources` 获取成对返回的 `source_id`、`source_version`、`chunk_id`；如果只知道 `source_id`，先调用 `ListProjectSourceChunks` 获取真实 `chunk_id`
+- 必须再用 `ReadProjectSource` 回查原文，且仅当返回 `ok=true` 时调用 `RecordProjectEvidence`
+- `excerpt` 必须逐字复制 `ReadProjectSource.text` 中的连续原文，`locator_json` 必须原样使用同一次读取结果中的一个 locator，禁止自行改写
 - 没有成功写入 `EvidenceRecord` 的事实不得计入已覆盖，也不得令 `converged=true`
 - 冲突证据必须分别记录为 `supported` 或 `contradicted`；未解决冲突不得收敛
 - **两份产物都必须写到磁盘**，不要只在对话里贴内容

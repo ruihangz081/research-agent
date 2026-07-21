@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable
 from rich.console import Console
 
 from . import checkpoints, config
+from .agent_loop import AgentLoopStuckError
 from .agents import analyst, collector, formatter, strategist, validator
 from .sources.api import build_runtime
 from .sources.enums import VerificationStatus
@@ -58,6 +59,12 @@ async def _safe_run(
             # 用户中断，直接保存状态抛出
             state.save()
             raise
+        except AgentLoopStuckError as e:
+            state.save()
+            raise PipelineError(
+                f"{stage_name} 因重复工具错误提前停止：{e}。"
+                "请修正工具参数后从当前项目断点续跑。"
+            ) from e
         except PipelineError:
             # Deterministic gates are not transient agent failures. Retrying would
             # waste model calls and mislabel the blocked stage as an agent crash.

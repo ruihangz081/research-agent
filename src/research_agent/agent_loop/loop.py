@@ -19,7 +19,7 @@ from ..llm.types import (
     ToolCallInfo,
 )
 from ..tools.registry import ToolRegistry
-from .types import AgentOptions
+from .types import AgentLoopStuckError, AgentOptions
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,7 @@ async def run_agent(
         ChatMessage(role="user", content=user_prompt),
     ]
     tool_schemas = tool_registry.get_schemas(options.allowed_tools or None)
+    repeated_errors: dict[tuple[str, str], int] = {}
 
     for turn in range(options.max_turns):
         # 1. 调用 LLM
@@ -79,6 +80,19 @@ async def run_agent(
         # 4. 执行每个 tool_call
         for tc in response.tool_calls:
             result = await _execute_tool_call(tc, tool_registry, options.cwd)
+            if result.startswith("Error executing tool '"):
+                error_key = (tc.function.name, result)
+                repeated_errors[error_key] = repeated_errors.get(error_key, 0) + 1
+                if repeated_errors[error_key] >= options.max_repeated_tool_errors:
+                    raise AgentLoopStuckError(
+                        f"tool {tc.function.name!r} returned the same error "
+                        f"{repeated_errors[error_key]} times; agent execution stopped"
+                    )
+            else:
+                repeated_errors = {
+                    key: count for key, count in repeated_errors.items()
+                    if key[0] != tc.function.name
+                }
             messages.append(ChatMessage(
                 role="tool",
                 content=result,

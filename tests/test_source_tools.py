@@ -30,10 +30,16 @@ async def test_four_source_tools_are_project_scoped(tmp_path: Path, monkeypatch:
     searched = json.loads(await project_sources.search_project_sources("project", "revenue"))
     chunk_id = searched["items"][0]["chunk_id"]
     read = json.loads(await project_sources.read_project_source("project", source.source_id, chunk_id))
+    assert read["ok"] is True
     assert read["untrusted_evidence"] is True
+    chunks = json.loads(await project_sources.list_project_source_chunks("project", source.source_id))
+    assert chunks["items"][0]["chunk_id"] == chunk_id
+    invalid = json.loads(await project_sources.read_project_source("project", source.source_id, source.source_id))
+    assert invalid["error"] == "chunk_not_found"
+    assert chunk_id in invalid["available_chunk_ids"]
     denied = await project_sources.list_project_sources("other-project")
     assert json.loads(denied)["items"] == []
-    assert {"ListProjectSources", "SearchProjectSources", "ReadProjectSource", "RecordProjectEvidence", "InspectSourceEvidence", "CaptureProjectWebSource"}.issubset(default_registry._schemas)
+    assert {"ListProjectSources", "SearchProjectSources", "ListProjectSourceChunks", "ReadProjectSource", "RecordProjectEvidence", "InspectSourceEvidence", "CaptureProjectWebSource"}.issubset(default_registry._schemas)
     assert default_registry._schemas["RecordProjectEvidence"]["parameters"]["properties"]["verification_status"]["enum"] == [
         "unverified", "supported", "partially_supported", "contradicted", "stale",
     ]
