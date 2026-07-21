@@ -25,6 +25,7 @@ def test_project_skill_loader_rejects_non_allowlisted_paths(name: str) -> None:
 def test_brokerage_skill_assets_are_complete() -> None:
     assets = load_project_skill("brokerage-report-formatting").assets_dir
     assert {path.name for path in assets.iterdir()} == {
+        "brokerage-report-tables.lua",
         "brokerage-report.sty",
         "brokerage-report.tex",
         "theme.json",

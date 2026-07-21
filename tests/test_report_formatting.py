@@ -12,10 +12,20 @@ from research_agent.report_formatting import (
     find_latex_engine,
     find_pandoc,
     generate_report_artifacts,
+    make_latex_source_ids_breakable,
+    normalize_markdown_for_pdf,
     replace_chart_placeholders,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "brokerage_report"
+
+
+def test_pdf_normalization_replaces_unsupported_ratings_and_breaks_source_ids() -> None:
+    assert normalize_markdown_for_pdf("★★★★☆ ≈ ❌") == "4/5 约 不确定"
+    source_id = r"src\_1234567890abcdef1234567890abcdef"
+    rendered = make_latex_source_ids_breakable(source_id)
+    assert rendered.replace(r"\allowbreak{}", "") == source_id
+    assert rendered.count(r"\allowbreak{}") == 3
 
 
 def _copy_fixture(tmp_path: Path) -> tuple[Path, Path]:
@@ -54,6 +64,17 @@ def test_unresolved_or_unused_required_chart_is_rejected(tmp_path: Path) -> None
         replace_chart_placeholders("# 没有图表", manifest, {}, target="html")
 
 
+def test_pdf_markdown_normalization_removes_unsafe_glyphs() -> None:
+    normalized = normalize_markdown_for_pdf(
+        "ARR $1亿→2月$1.5亿 ✅ ⚠️ 🔴 ① ⭐⭐⭐⭐⭐"
+    )
+    assert "$1亿 -> 2月$1.5亿" in normalized
+    assert "注意：" in normalized
+    assert "(1)" in normalized
+    assert "5/5" in normalized
+    assert not any(glyph in normalized for glyph in ("✅", "⚠", "🔴", "①", "⭐"))
+
+
 @pytest.mark.anyio
 async def test_full_fixture_generates_one_formal_pdf_and_qa_previews(tmp_path: Path) -> None:
     if not find_pandoc() or not find_latex_engine():
@@ -68,6 +89,11 @@ async def test_full_fixture_generates_one_formal_pdf_and_qa_previews(tmp_path: P
     assert artifacts["tex_path"].is_file()
     assert artifacts["pdf_path"].is_file()
     assert artifacts["pdf_path"].name == config.FILE_FINAL_REPORT_PDF
+    assert not artifacts["pdf_path"].with_suffix(".layout-warnings.log").exists()
+    tex = artifacts["tex_path"].read_text(encoding="utf-8")
+    assert "\\$1亿" in tex
+    assert "p{(\\linewidth" in tex
+    assert "✅" not in tex
     assert artifacts["qa"]["page_count"] >= 3
     assert len(artifacts["qa"]["previews"]) >= 2
     qa = json.loads((tmp_path / "05_pdf_qa.json").read_text(encoding="utf-8"))

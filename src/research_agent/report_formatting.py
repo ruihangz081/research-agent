@@ -30,6 +30,27 @@ _PLACEHOLDER = re.compile(
     re.MULTILINE,
 )
 _DISCLAIMER = "本报告基于公开信息和用户授权材料自动整理，仅供研究参考，不构成任何投资建议。"
+_PLAIN_TEXT_REPLACEMENTS = {
+    "✅": "",
+    "⚠️": "注意：",
+    "⚠": "注意：",
+    "🔴": "",
+    "🟡": "",
+    "🟢": "",
+    "❌": "不确定",
+    "≈": "约",
+    "①": "(1)",
+    "②": "(2)",
+    "③": "(3)",
+    "④": "(4)",
+    "⑤": "(5)",
+    "‑": "-",
+    "–": "-",
+    "—": "-",
+    "→": " -> ",
+    "←": " <- ",
+    "️": "",
+}
 
 
 def find_pandoc() -> str | None:
@@ -68,6 +89,35 @@ def _ensure_disclaimer(markdown: str) -> str:
         + _DISCLAIMER
         + "\n"
     )
+
+
+def normalize_markdown_for_pdf(markdown: str) -> str:
+    """Remove glyphs and syntax that are unsafe in the deterministic PDF path."""
+    normalized = re.sub(
+        r"⭐{1,5}",
+        lambda match: f"{len(match.group(0))}/5",
+        markdown,
+    )
+    normalized = re.sub(
+        r"[★☆]{1,5}",
+        lambda match: f"{match.group(0).count('★')}/{len(match.group(0))}",
+        normalized,
+    )
+    for source, replacement in _PLAIN_TEXT_REPLACEMENTS.items():
+        normalized = normalized.replace(source, replacement)
+    return normalized
+
+
+def make_latex_source_ids_breakable(tex: str) -> str:
+    """Add safe line-break points to long escaped source identifiers."""
+    pattern = re.compile(r"src\\_([0-9a-f]{32})")
+
+    def replacement(match: re.Match[str]) -> str:
+        source_hash = match.group(1)
+        chunks = [source_hash[index:index + 8] for index in range(0, 32, 8)]
+        return r"src\_" + r"\allowbreak{}".join(chunks)
+
+    return pattern.sub(replacement, tex)
 
 
 def _fallback_table(chart: ChartSpec) -> str:
@@ -226,11 +276,14 @@ def build_report_latex(
     skill = load_project_skill(config.REPORT_FORMATTING_SKILL)
     template = skill.assets_dir / "brokerage-report.tex"
     style = skill.assets_dir / "brokerage-report.sty"
-    if not template.is_file() or not style.is_file():
+    table_filter = skill.assets_dir / "brokerage-report-tables.lua"
+    if not template.is_file() or not style.is_file() or not table_filter.is_file():
         raise RuntimeError("券商研报 LaTeX 模板资产不完整")
     shutil.copyfile(style, project_dir / style.name)
-    prepared = replace_chart_placeholders(
-        _ensure_disclaimer(markdown), manifest, assets, target="latex"
+    prepared = normalize_markdown_for_pdf(
+        replace_chart_placeholders(
+            _ensure_disclaimer(markdown), manifest, assets, target="latex"
+        )
     )
     prepared = re.sub(r"\A# [^\n]+\n+", "", prepared, count=1)
     source_path = project_dir / "05_final_report.render.md"
@@ -240,10 +293,11 @@ def build_report_latex(
         [
             pandoc,
             source_path.name,
-            "--from=gfm+raw_html",
+            "--from=gfm-tex_math_dollars+raw_html",
             "--to=latex",
             "--standalone",
             "--shift-heading-level-by=-1",
+            f"--lua-filter={table_filter}",
             f"--template={template}",
             f"--metadata=title:{topic} 调研报告",
             f"--metadata=date:{date.today().isoformat()}",
@@ -255,6 +309,10 @@ def build_report_latex(
     source_path.unlink(missing_ok=True)
     if proc.returncode != 0:
         raise RuntimeError(f"Pandoc LaTeX 转换失败：{proc.stderr.strip()}")
+    tex_path.write_text(
+        make_latex_source_ids_breakable(tex_path.read_text(encoding="utf-8")),
+        encoding="utf-8",
+    )
     return tex_path
 
 
@@ -287,6 +345,8 @@ def compile_report_pdf(tex_path: Path) -> Path | None:
         warning_path = tex_path.with_suffix(".layout-warnings.log")
         warning_path.write_text("\n".join(serious_overfull + fatal_warnings), encoding="utf-8")
         raise RuntimeError(f"PDF 存在严重排版警告：{warning_path.name}")
+    tex_path.with_suffix(".compile.log").unlink(missing_ok=True)
+    tex_path.with_suffix(".layout-warnings.log").unlink(missing_ok=True)
     pdf_path = tex_path.with_suffix(".pdf")
     return pdf_path if pdf_path.is_file() else None
 
@@ -300,7 +360,7 @@ def inspect_pdf(pdf_path: Path, *, topic: str) -> dict[str, Any]:
     if document.page_count < 1:
         raise RuntimeError("PDF 没有有效页面")
     text = "\n".join(page.get_text() for page in document)
-    if topic not in text:
+    if re.sub(r"\s+", "", topic) not in re.sub(r"\s+", "", text):
         raise RuntimeError("PDF 文本检查失败：缺少报告标题")
     if "不构成任何投资建议" not in text:
         raise RuntimeError("PDF 文本检查失败：缺少免责声明")
@@ -313,6 +373,9 @@ def inspect_pdf(pdf_path: Path, *, topic: str) -> dict[str, Any]:
         sample_pages = sorted({
             0,
             min(1, document.page_count - 1),
+            document.page_count // 4,
+            document.page_count // 2,
+            (document.page_count * 3) // 4,
             document.page_count - 1,
             *image_pages[:3],
         })

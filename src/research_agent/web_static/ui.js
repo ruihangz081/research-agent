@@ -120,50 +120,152 @@ const Lumitrace = (() => {
 
   function renderMarkdown(text) {
     if (!text) return '<div class="empty compact"><span class="empty-symbol">◇</span><strong>暂无内容</strong></div>';
+    const source = String(text).replace(/\r\n?/g, "\n");
+    const lines = source.split("\n");
     const blocks = [];
-    let inCode = false;
-    let code = [];
-    let list = [];
-    let table = [];
-    const inline = (value) => escapeHtml(value).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
-    const flushList = () => {
-      if (!list.length) return;
-      blocks.push(`<ul>${list.map((item) => `<li>${item}</li>`).join("")}</ul>`);
-      list = [];
+    let paragraph = [];
+    let list = null;
+
+    const inline = (value) => {
+      let marker = "LUMITRACE_MARKDOWN_TOKEN";
+      while (value.includes(marker)) marker += "_";
+      const tokens = [];
+      const stash = (html) => `${marker}${tokens.push(html) - 1}${marker}`;
+      const safeUrl = (url) => /^(?:https?:\/\/|mailto:|\/|#)/i.test(url) ? url : "#";
+      let output = escapeHtml(value);
+      output = output.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${code}</code>`));
+      output = output.replace(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+&quot;([^&]*)&quot;)?\)/g, (_, alt, url, title) => {
+        const href = safeUrl(url);
+        const titleAttr = title ? ` title="${title}"` : "";
+        return stash(`<img src="${href}" alt="${alt}"${titleAttr} loading="lazy" />`);
+      });
+      output = output.replace(/\[([^\]]+)\]\(([^\s)]+)(?:\s+&quot;([^&]*)&quot;)?\)/g, (_, label, url, title) => {
+        const href = safeUrl(url);
+        const titleAttr = title ? ` title="${title}"` : "";
+        const external = /^https?:\/\//i.test(href) ? ' target="_blank" rel="noopener noreferrer"' : "";
+        return stash(`<a href="${href}"${titleAttr}${external}>${label}</a>`);
+      });
+      output = output
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/__(.+?)__/g, "<strong>$1</strong>")
+        .replace(/~~(.+?)~~/g, "<del>$1</del>")
+        .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+      return output.replace(new RegExp(`${marker}(\\d+)${marker}`, "g"), (_, index) => tokens[Number(index)]);
     };
-    const flushTable = () => {
-      if (!table.length) return;
-      const cells = (row) => row.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
-      const separator = table[1] && cells(table[1]).every((cell) => /^:?-{3,}:?$/.test(cell));
-      if (!separator) table.forEach((row) => blocks.push(`<p>${inline(row)}</p>`));
-      else {
-        const header = cells(table[0]);
-        const rows = table.slice(2).map(cells);
-        blocks.push(`<div class="table-scroll"><table><thead><tr>${header.map((cell) => `<th>${inline(cell)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+
+    const splitTableRow = (row) => {
+      const value = row.trim().replace(/^\|/, "").replace(/\|$/, "");
+      const cells = [];
+      let cell = "";
+      let escaped = false;
+      for (const char of value) {
+        if (escaped) { cell += char; escaped = false; }
+        else if (char === "\\") escaped = true;
+        else if (char === "|") { cells.push(cell.trim()); cell = ""; }
+        else cell += char;
       }
-      table = [];
+      cells.push(cell.trim());
+      return cells;
     };
-    for (const rawLine of text.split("\n")) {
+    const isTableDivider = (line) => {
+      const cells = splitTableRow(line);
+      return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+    };
+    const flushParagraph = () => {
+      if (!paragraph.length) return;
+      blocks.push(`<p>${inline(paragraph.join(" "))}</p>`);
+      paragraph = [];
+    };
+    const flushList = () => {
+      if (!list) return;
+      const start = list.type === "ol" && list.start !== 1 ? ` start="${list.start}"` : "";
+      blocks.push(`<${list.type}${start}>${list.items.map((item) => `<li>${item}</li>`).join("")}</${list.type}>`);
+      list = null;
+    };
+    const flushPending = () => { flushParagraph(); flushList(); };
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const rawLine = lines[index];
       const line = rawLine.trimEnd();
-      if (!inCode && /^\s*\|.*\|\s*$/.test(line)) { flushList(); table.push(line); continue; }
-      flushTable();
-      if (line.startsWith("```")) {
-        if (inCode) {
-          blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
-          code = [];
-        } else flushList();
-        inCode = !inCode;
-      } else if (inCode) code.push(rawLine);
-      else if (!line.trim()) flushList();
-      else if (line.startsWith("### ")) { flushList(); blocks.push(`<h3>${inline(line.slice(4))}</h3>`); }
-      else if (line.startsWith("## ")) { flushList(); blocks.push(`<h2>${inline(line.slice(3))}</h2>`); }
-      else if (line.startsWith("# ")) { flushList(); blocks.push(`<h1>${inline(line.slice(2))}</h1>`); }
-      else if (/^[-*]\s+/.test(line)) list.push(inline(line.replace(/^[-*]\s+/, "")));
-      else { flushList(); blocks.push(`<p>${inline(line)}</p>`); }
+      const fence = line.match(/^\s*(`{3,}|~{3,})\s*([\w-]+)?\s*$/);
+      if (fence) {
+        flushPending();
+        const code = [];
+        const marker = fence[1][0];
+        const markerLength = fence[1].length;
+        index += 1;
+        while (index < lines.length && !new RegExp(`^\\s*${marker}{${markerLength},}\\s*$`).test(lines[index])) {
+          code.push(lines[index]);
+          index += 1;
+        }
+        const language = fence[2] ? ` class="language-${fence[2]}"` : "";
+        blocks.push(`<pre><code${language}>${escapeHtml(code.join("\n"))}</code></pre>`);
+        continue;
+      }
+      if (!line.trim()) { flushPending(); continue; }
+
+      if (line.includes("|") && index + 1 < lines.length && isTableDivider(lines[index + 1])) {
+        flushPending();
+        const headers = splitTableRow(line);
+        const dividers = splitTableRow(lines[index + 1]);
+        const alignments = dividers.map((cell) => cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : "left");
+        const rows = [];
+        index += 2;
+        while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+          rows.push(splitTableRow(lines[index]));
+          index += 1;
+        }
+        index -= 1;
+        const headerHtml = headers.map((cell, cellIndex) => `<th class="align-${alignments[cellIndex] || "left"}">${inline(cell)}</th>`).join("");
+        const bodyHtml = rows.map((row) => `<tr>${headers.map((_, cellIndex) => `<td class="align-${alignments[cellIndex] || "left"}">${inline(row[cellIndex] || "")}</td>`).join("")}</tr>`).join("");
+        blocks.push(`<div class="table-scroll"><table><thead><tr>${headerHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`);
+        continue;
+      }
+
+      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*$/);
+      if (heading) {
+        flushPending();
+        const level = heading[1].length;
+        blocks.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+        continue;
+      }
+      if (/^\s{0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        flushPending();
+        blocks.push("<hr />");
+        continue;
+      }
+      if (/^\s{0,3}>\s?/.test(line)) {
+        flushPending();
+        const quote = [];
+        while (index < lines.length && /^\s{0,3}>\s?/.test(lines[index])) {
+          quote.push(inline(lines[index].replace(/^\s{0,3}>\s?/, "")));
+          index += 1;
+        }
+        index -= 1;
+        blocks.push(`<blockquote>${quote.join("<br />")}</blockquote>`);
+        continue;
+      }
+
+      const listItem = line.match(/^\s{0,3}([-+*]|\d+[.)])\s+(.+)$/);
+      if (listItem) {
+        flushParagraph();
+        const type = /^\d/.test(listItem[1]) ? "ol" : "ul";
+        if (list && list.type !== type) flushList();
+        if (!list) list = { type, start: type === "ol" ? Number.parseInt(listItem[1], 10) : 1, items: [] };
+        let content = inline(listItem[2]);
+        const task = content.match(/^\[([ xX])\]\s+(.+)$/);
+        if (task) content = `<input type="checkbox" disabled${task[1].toLowerCase() === "x" ? " checked" : ""} />${task[2]}`;
+        list.items.push(content);
+        continue;
+      }
+      if (list && /^\s{2,}\S/.test(rawLine)) {
+        list.items[list.items.length - 1] += ` ${inline(rawLine.trim())}`;
+        continue;
+      }
+      flushList();
+      paragraph.push(line.trim());
     }
-    flushTable();
-    flushList();
-    if (inCode) blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+    flushPending();
     return `<div class="markdown">${blocks.join("")}</div>`;
   }
 

@@ -46,6 +46,7 @@ async function loadPreview() {
   if (!artifact) return;
   $("previewTitle").textContent = artifact.label;
   $("previewMeta").textContent = artifact.exists ? "已生成" : "等待生成";
+  $("previewScroller").scrollTop = 0;
   if (!artifact.exists) {
     $("documentPreview").innerHTML = '<div class="empty"><span class="empty-symbol">◇</span><strong>成果尚未生成</strong><p>完成对应研究阶段后即可在此预览。</p></div>';
     return;

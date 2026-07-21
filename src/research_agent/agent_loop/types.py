@@ -4,6 +4,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+class AgentLoopStuckError(RuntimeError):
+    """Raised when an agent repeats the same failing tool call."""
+
+
 @dataclass
 class AgentOptions:
     """Agent 运行配置（替代 ClaudeAgentOptions）。
@@ -19,3 +23,4 @@ class AgentOptions:
     temperature: float = 0.7
     max_tokens: int | None = None
     stream: bool = True  # 是否流式输出
+    max_repeated_tool_errors: int = 3

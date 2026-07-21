@@ -35,7 +35,8 @@
 \renewcommand{\headrule}{\hbox to\headwidth{\color{BrokerGrid}\leaders\hrule height \headrulewidth\hfill}}
 \renewcommand{\arraystretch}{1.25}
 \setlength{\tabcolsep}{3.5pt}
-\AtBeginEnvironment{longtable}{\small}
+\setlength{\emergencystretch}{2em}
+\AtBeginEnvironment{longtable}{\small\sloppy}
 \makeatletter
 \newcommand{\BrokerNeedSpace}[1]{%
   \begingroup\setlength{\dimen@}{#1}%

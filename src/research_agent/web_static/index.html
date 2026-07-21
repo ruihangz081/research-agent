@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>溯光 Lumitrace · 本地多智能体调研工作台</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260719-report" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260720-home-wordmark" />
   </head>
   <body class="landing-body">
     <header class="landing-header">
@@ -31,7 +31,7 @@
         <span class="hero-orb orb-three"></span>
         <div class="hero-content">
           <span class="hero-kicker"><i class="status-dot running"></i> LOCAL MULTI-AGENT RESEARCH SYSTEM <b>✦</b></span>
-          <h1>LUMITRACE</h1>
+          <h1>Lumitrace</h1>
           <p class="hero-subtitle">面向行业研究的本地多智能体调研工作台</p>
           <div id="workflow" class="hero-flow" aria-label="研究流程">
             <span>规划</span><i>→</i><span>搜集</span><i>→</i><span>验证</span><i>→</i><span>补采</span><i>→</i><span>分析</span><i>→</i><span>报告生成</span>
@@ -49,22 +49,54 @@
         <span>TRUSTED RESEARCH</span><i>•</i><span>MULTI-AGENT LOOP</span><i>•</i><span>LUMITRACE</span><i>•</i><span>TRUSTED RESEARCH</span><i>•</i><span>MULTI-AGENT LOOP</span>
       </div>
 
-      <section id="product" class="landing-features">
-        <a class="landing-feature" href="/research">
-          <span class="feature-icon">⌂</span><h2>研究首页</h2><p>全局视图，集中管理研究任务、状态与审批提醒。</p><div class="feature-mini"><span></span><span></span><span></span></div>
-        </a>
-        <a class="landing-feature" href="/workspace">
-          <span class="feature-icon">□</span><h2>项目工作区</h2><p>跟踪智能体执行、采集轮次、检查点与研究产物。</p><div class="feature-mini lines"><span></span><span></span><span></span></div>
-        </a>
-        <a class="landing-feature" href="/materials">
-          <span class="feature-icon">◇</span><h2>材料中心</h2><p>统一管理与检索材料，建立可复用的研究资产库。</p><div class="feature-mini files"><span></span><span></span><span></span></div>
-        </a>
-        <a class="landing-feature" href="/results">
-          <span class="feature-icon">▥</span><h2>成果中心</h2><p>沉淀洞察与报告，一键导出多种交付格式。</p><div class="feature-mini chart"><span></span><span></span><span></span></div>
-        </a>
-        <a class="landing-feature" href="/settings">
-          <span class="feature-icon">⚙</span><h2>设置</h2><p>查看模型、搜索、Embedding 与本地存储配置。</p><div class="feature-mini settings"><span></span><span></span><span></span></div>
-        </a>
+      <section id="product" class="landing-products" aria-labelledby="productTitle">
+        <header class="landing-section-heading">
+          <span class="section-kicker">RESEARCH SURFACES</span>
+          <h2 id="productTitle">五个工作面，覆盖一条完整研究链路</h2>
+          <p>从提出问题、组织材料，到跟踪智能体和交付成果，每一个环节都在同一个本地工作台里保持可见、可控、可复用。</p>
+        </header>
+        <div class="landing-features">
+          <a class="landing-feature" href="/research">
+            <div class="feature-topline"><span class="feature-icon">⌂</span><span class="feature-number">01</span></div>
+            <span class="feature-label">RESEARCH CONTROL</span><h2>研究首页</h2>
+            <p class="feature-summary">从一个研究主题开始，集中掌握任务状态、审批节点与下一步动作。</p>
+            <div class="feature-mini" aria-hidden="true"><span></span><span></span><span></span></div>
+            <ul class="feature-points"><li>任务状态与进度总览</li><li>检查点审批与继续运行</li></ul>
+            <span class="feature-enter">进入研究首页 <b>→</b></span>
+          </a>
+          <a class="landing-feature" href="/workspace">
+            <div class="feature-topline"><span class="feature-icon">□</span><span class="feature-number">02</span></div>
+            <span class="feature-label">AGENT WORKSPACE</span><h2>项目工作区</h2>
+            <p class="feature-summary">实时跟随 Agent 的执行轨迹，把轮次、日志、检查点和项目产物放在同一视野。</p>
+            <div class="feature-mini lines" aria-hidden="true"><span></span><span></span><span></span></div>
+            <ul class="feature-points"><li>轮次、日志与阶段时间线</li><li>并排阅读项目产物</li></ul>
+            <span class="feature-enter">打开项目工作区 <b>→</b></span>
+          </a>
+          <a class="landing-feature" href="/materials">
+            <div class="feature-topline"><span class="feature-icon">◇</span><span class="feature-number">03</span></div>
+            <span class="feature-label">SOURCE LIBRARY</span><h2>材料中心</h2>
+            <p class="feature-summary">统一接入、解析和检索研究材料，让分散的信息沉淀为可复用的资产库。</p>
+            <div class="feature-mini files" aria-hidden="true"><span></span><span></span><span></span></div>
+            <ul class="feature-points"><li>解析、OCR 与元数据管理</li><li>检索、版本比较与归档</li></ul>
+            <span class="feature-enter">管理研究材料 <b>→</b></span>
+          </a>
+          <a class="landing-feature" href="/results">
+            <div class="feature-topline"><span class="feature-icon">▥</span><span class="feature-number">04</span></div>
+            <span class="feature-label">DELIVERY CENTER</span><h2>成果中心</h2>
+            <p class="feature-summary">集中预览洞察、Markdown 草案和正式报告，把研究结果整理成可交付文件。</p>
+            <div class="feature-mini chart" aria-hidden="true"><span></span><span></span><span></span></div>
+            <ul class="feature-points"><li>Markdown 与正式报告预览</li><li>PDF、TeX 与交付文件导出</li></ul>
+            <span class="feature-enter">查看研究成果 <b>→</b></span>
+          </a>
+          <a class="landing-feature" href="/settings">
+            <div class="feature-topline"><span class="feature-icon">⚙</span><span class="feature-number">05</span></div>
+            <span class="feature-label">LOCAL CONFIGURATION</span><h2>设置</h2>
+            <p class="feature-summary">调整模型、搜索、Embedding 与本地存储配置，让工作台适配你的研发环境。</p>
+            <div class="feature-mini settings" aria-hidden="true"><span></span><span></span><span></span></div>
+            <ul class="feature-points"><li>服务连通性与参数检查</li><li>本地路径和默认轮次配置</li></ul>
+            <span class="feature-enter">检查工作台设置 <b>→</b></span>
+          </a>
+        </div>
       </section>
     </main>
   </body>

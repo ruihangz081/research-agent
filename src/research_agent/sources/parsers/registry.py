@@ -114,13 +114,22 @@ def parse_html(source_id: str, data: bytes, filename: str) -> SourceDocument:
         html = _decode(data)
     soup = BeautifulSoup(html, "html.parser")
     blocks: list[ContentBlock] = []
+    headings: list[str] = []
     for element in soup.find_all(["title", "h1", "h2", "h3", "h4", "p", "li", "blockquote", "pre"]):
         text = " ".join(element.get_text(" ", strip=True).split())
         if not text:
             continue
         tag = element.name
         kind = BlockType.TITLE if tag == "title" else BlockType.HEADING if tag.startswith("h") else BlockType.LIST if tag == "li" else BlockType.QUOTE if tag == "blockquote" else BlockType.PARAGRAPH
-        blocks.append(_block(source_id, len(blocks), text, kind, SourceLocator(locator_type=LocatorType.OFFSET), heading_path=[]))
+        if tag.startswith("h"):
+            level = int(tag[1])
+            headings = headings[: level - 1] + [text]
+        locator = SourceLocator(
+            locator_type=LocatorType.PARAGRAPH,
+            paragraph_index=len(blocks),
+            heading_path=headings.copy(),
+        )
+        blocks.append(_block(source_id, len(blocks), text, kind, locator, heading_path=headings.copy()))
     tables: list[TableBlock] = []
     for table_index, raw_table in enumerate(soup.find_all("table"), 1):
         rows = [[cell.get_text(" ", strip=True) for cell in row.find_all(["th", "td"])] for row in raw_table.find_all("tr")]

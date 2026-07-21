@@ -2,6 +2,10 @@
 
 **模型无关**的行业调研自动化流水线。支持任何 OpenAI 兼容 API（OpenAI / DeepSeek / Qwen / Ollama / vLLM / 本地模型）。
 
+<p align="center">
+  <img src="docs/images/lumitrace-home.png" alt="溯光 Lumitrace 首页" width="100%" />
+</p>
+
 ## 特点
 
 - **模型无关**：通过 `LLM_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL` 三个环境变量切换任意模型

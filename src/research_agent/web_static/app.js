@@ -1,6 +1,6 @@
 Lumitrace.mountShell("workspace");
 
-const state = { projects: [], projectId: Lumitrace.selectedProject(), project: null, artifactKey: null, poll: null };
+const state = { projects: [], projectId: Lumitrace.selectedProject(), project: null, artifactKey: null, renderedArtifactKey: null, renderedArtifactMarkup: null, poll: null };
 const $ = (id) => document.getElementById(id);
 const pipelineStages = [
   ["初始化", ["init"]],
@@ -59,7 +59,7 @@ function renderArtifacts(project) {
   $("artifactTabs").querySelectorAll("[data-artifact]").forEach((button) => button.addEventListener("click", () => {
     state.artifactKey = button.dataset.artifact;
     renderArtifacts(project);
-    loadArtifact();
+    loadArtifact(true);
   }));
 }
 
@@ -70,21 +70,36 @@ function updateDownloads(project) {
   $("downloadTexBtn").disabled = !exists("final_report_tex");
 }
 
-async function loadArtifact() {
+async function loadArtifact(forceTop = false) {
+  const view = $("artifactView");
+  const artifactKey = state.artifactKey;
+  const artifactChanged = state.renderedArtifactKey !== artifactKey;
   if (!state.projectId || !state.artifactKey) {
-    $("artifactView").innerHTML = '<div class="empty"><span class="empty-symbol">◇</span><strong>暂无产物</strong></div>';
+    view.innerHTML = '<div class="empty"><span class="empty-symbol">◇</span><strong>暂无产物</strong></div>';
+    state.renderedArtifactKey = null;
+    state.renderedArtifactMarkup = null;
     return;
   }
   const selected = state.project?.artifacts.find((item) => item.key === state.artifactKey);
   if (!selected?.exists) {
-    $("artifactView").innerHTML = '<div class="empty"><span class="empty-symbol">◇</span><strong>等待生成</strong><p>该产物将在对应研究阶段完成后出现。</p></div>';
+    view.innerHTML = '<div class="empty"><span class="empty-symbol">◇</span><strong>等待生成</strong><p>该产物将在对应研究阶段完成后出现。</p></div>';
+    state.renderedArtifactKey = state.artifactKey;
+    state.renderedArtifactMarkup = null;
+    if (forceTop || artifactChanged) view.scrollTop = 0;
     return;
   }
   try {
-    const artifact = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/artifacts/${encodeURIComponent(state.artifactKey)}`);
-    $("artifactView").innerHTML = artifact.html || Lumitrace.renderMarkdown(artifact.content);
+    const artifact = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/artifacts/${encodeURIComponent(artifactKey)}`);
+    if (state.artifactKey !== artifactKey) return;
+    const markup = artifact.html || Lumitrace.renderMarkdown(artifact.content);
+    if (state.renderedArtifactKey !== artifactKey || state.renderedArtifactMarkup !== markup) {
+      view.innerHTML = markup;
+      state.renderedArtifactKey = artifactKey;
+      state.renderedArtifactMarkup = markup;
+    }
+    if (forceTop || artifactChanged) view.scrollTop = 0;
   } catch (error) {
-    $("artifactView").innerHTML = `<div class="empty"><span class="empty-symbol">!</span><strong>内容读取失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p></div>`;
+    view.innerHTML = `<div class="empty"><span class="empty-symbol">!</span><strong>内容读取失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p></div>`;
   }
 }
 
