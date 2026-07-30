@@ -40,6 +40,17 @@
               </div>
             </div>
           </section>
+          <section id="planMigratePanel" class="panel failure-panel hidden">
+            <div class="panel-header"><h2>需要重新确认研究计划</h2><span class="status-pill danger"><i class="status-dot danger"></i>交付已阻断</span></div>
+            <div class="panel-body">
+              <p class="muted" style="margin-top:0">该项目缺少研究需求清单（research_requirements.json）。系统不会按空要求放行交付，也不会根据已有证据反推研究问题。</p>
+              <pre id="planMigrateError" class="failure-error"></pre>
+              <div class="failure-actions">
+                <button id="planMigrateBtn" class="button primary" type="button">生成研究需求清单</button>
+                <span class="muted">将从现有调研提纲重建；重建后请查阅清单再继续推进。</span>
+              </div>
+            </div>
+          </section>
           <div id="workspaceEmpty" class="panel empty"><span class="empty-symbol">◇</span><strong>选择一个研究项目</strong><p>从研究首页打开项目，查看 Agent 执行进度与产物。</p><a class="button primary" href="/research">前往研究首页</a></div>
 
           <div id="workspaceContent" class="workspace-grid hidden">
@@ -52,6 +63,14 @@
                     <summary class="muted" style="cursor:pointer;font-weight:700">实时日志</summary>
                     <div id="logList" class="log-box" style="margin-top:10px"></div>
                   </details>
+                </div>
+              </section>
+
+              <section id="planPanel" class="panel">
+                <div class="panel-header"><h2>研究需求清单</h2><span id="planBadge" class="status-pill">—</span></div>
+                <div class="panel-body">
+                  <p class="muted" style="margin-top:0">研究开始前固定的必答问题。确定性质量门按这份清单判定覆盖率，与已找到多少证据无关。</p>
+                  <div id="planTable"></div>
                 </div>
               </section>
 

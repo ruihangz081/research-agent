@@ -13,17 +13,44 @@ from research_agent.agents.formatter import (
 from research_agent.agents.validator import ValidationFeedback
 from research_agent.orchestrator import (
     PipelineError,
+    ResearchPlanBlockedError,
     _assert_delivery_ready,
     _deterministic_convergence,
     _safe_run,
+    migrate_research_plan,
     recover_blocked_delivery,
 )
+from research_agent.research_plan import derive_plan_from_outline, save_plan
 from research_agent.sources import LocalObjectStore, SQLiteRepository, SourceService
 from research_agent.sources.enums import VerificationStatus
 from research_agent.sources.models import EvidenceRecord
 from research_agent.sources.runtime import reset_runtime
 from research_agent.state import ProjectState, Stage
 from research_agent.tools.builtins import project_sources
+
+
+def fix_plan(state: ProjectState, *question_ids: str) -> None:
+    """写入研究开始阶段固定的需求清单。
+
+    R1 之后所有门禁都读取这份清单，因此夹具必须显式声明"这次研究要回答哪些问题"，
+    而不是让系统从已有证据反推。
+    """
+    ids = question_ids or ("q1",)
+    outline_text = (
+        f"# 《{state.topic}》调研提纲\n\n## 二、核心研究问题\n"
+        + "\n".join(
+            f"{index}. 研究问题 {value}" for index, value in enumerate(ids, 1)
+        )
+        + "\n"
+    )
+    outline = state.project_dir / config.FILE_OUTLINE
+    outline.parent.mkdir(parents=True, exist_ok=True)
+    outline.write_text(outline_text, encoding="utf-8")
+    state.outline_path = str(outline)
+    plan, _ = derive_plan_from_outline(state.topic, outline_text)
+    for item, question_id in zip(plan.requirements, ids, strict=True):
+        item.question_id = question_id
+    save_plan(state, plan)
 
 
 def prepared_state(tmp_path: Path, monkeypatch):
@@ -33,6 +60,7 @@ def prepared_state(tmp_path: Path, monkeypatch):
     state = ProjectState(topic="evidence", date_str="20260717")
     state.project_dir.mkdir(parents=True)
     state.save()
+    fix_plan(state, "q1")
     repository = SQLiteRepository(config.SOURCE_DATA_DIR / "catalog.sqlite3")
     service = SourceService(repository, LocalObjectStore(config.SOURCE_DATA_DIR / "objects"))
     source = service.register_bytes(state.project_dir.name, "facts.txt", b"Revenue reached 42 million").source
@@ -94,12 +122,65 @@ def test_delivery_gate_explains_recovery_without_starting_agent5(
     monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
     state = ProjectState(topic="blocked", date_str="20260720", stage=Stage.FORMATTING)
+    state.save()
+    # 需求清单先于证据检查阻断，所以这里显式固定一份，才能测到"证据不足"这条路径
+    fix_plan(state, "q1")
 
     with pytest.raises(PipelineError, match="Agent5 未启动，本错误不会重试") as exc_info:
         _assert_delivery_ready(state)
 
     assert f"/materials?project={state.project_dir.name}" in str(exc_info.value)
     assert state.notes["delivery_blocked_stage"] == "evidence"
+
+
+def test_delivery_gate_blocks_legacy_project_missing_research_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """旧项目没有需求清单时：阻断在需求清单，而不是伪装成"证据不足"。"""
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
+    state = ProjectState(topic="legacy", date_str="20260720", stage=Stage.FORMATTING)
+    state.save()
+
+    with pytest.raises(ResearchPlanBlockedError, match="migrate-plan"):
+        _assert_delivery_ready(state)
+
+    assert state.notes["delivery_blocked_stage"] == "research_plan"
+    assert state.notes["research_plan_migration_required"] is True
+    assert state.failed_stage == "研究需求清单"
+
+
+def test_migration_rebuilds_plan_from_existing_outline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """迁移只做一件事：从既有提纲重建需求清单，不按已有证据反推。"""
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
+    state = ProjectState(topic="legacy", date_str="20260720", stage=Stage.FORMATTING)
+    state.project_dir.mkdir(parents=True, exist_ok=True)
+    outline = state.project_dir / config.FILE_OUTLINE
+    outline.write_text(
+        "# 《X》调研提纲\n\n"
+        "## 二、核心研究问题（Key Questions）\n"
+        "1. **市场规模**有多大？\n"
+        "2. 竞争格局如何？\n"
+        "\n## 三、调研章节规划\n### 1. 市场概况\n",
+        encoding="utf-8",
+    )
+    state.outline_path = str(outline)
+    state.save()
+
+    message = migrate_research_plan(state)
+
+    assert "2 个研究问题" in message
+    assert (state.project_dir / config.FILE_RESEARCH_REQUIREMENTS).is_file()
+    assert state.notes.get("research_plan_migration_required") is None
+
+    # 迁移只固定问题，证据仍然缺失，所以交付必须继续被阻断
+    with pytest.raises(PipelineError, match="交付前证据门槛阻断"):
+        _assert_delivery_ready(state)
 
 
 @pytest.mark.anyio
@@ -149,8 +230,8 @@ async def test_formatter_blocks_before_generation_without_evidence(
     monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
     state = ProjectState(topic="blocked", date_str="20260720")
     state.project_dir.mkdir(parents=True)
+    fix_plan(state, "q1")
     for attribute, filename in (
-        ("outline_path", config.FILE_OUTLINE),
         ("analysis_path", config.FILE_ANALYSIS),
         ("sources_final_path", config.FILE_SOURCES_FINAL),
     ):
@@ -180,7 +261,6 @@ async def test_formatter_reuses_report_and_surfaces_typeset_failure(
         verification_status=VerificationStatus.SUPPORTED, confidence=1,
     ))
     for attribute, filename in (
-        ("outline_path", config.FILE_OUTLINE),
         ("analysis_path", config.FILE_ANALYSIS),
         ("sources_final_path", config.FILE_SOURCES_FINAL),
     ):

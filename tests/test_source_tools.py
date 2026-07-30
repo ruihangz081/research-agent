@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,40 @@ from research_agent.sources.quality import ResearchRequirement
 from research_agent.tools import default_registry
 from research_agent.tools.builtins import project_sources
 from research_agent.tools.builtins.web_fetch import WebResource
+
+
+def write_requirements(projects_dir: Path, project_id: str, *question_ids: str) -> Path:
+    """工具层通过 PROJECTS_DIR/<project_id>/research_requirements.json 校验 question_id。"""
+    directory = projects_dir / project_id
+    directory.mkdir(parents=True, exist_ok=True)
+    outline_text = (
+        f"# 《{project_id}》调研提纲\n\n## 二、核心研究问题\n"
+        + "\n".join(
+            f"{index}. 研究问题 {value}"
+            for index, value in enumerate(question_ids, 1)
+        )
+        + "\n"
+    )
+    (directory / config.FILE_OUTLINE).write_text(outline_text, encoding="utf-8")
+    path = directory / config.FILE_RESEARCH_REQUIREMENTS
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "topic": project_id,
+                "source_outline": hashlib.sha256(
+                    outline_text.encode("utf-8")
+                ).hexdigest()[:16],
+                "requirements": [
+                    {"question_id": value, "text": f"研究问题 {value}"}
+                    for value in question_ids
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 @pytest.mark.anyio
@@ -53,6 +88,8 @@ async def test_public_web_source_can_create_evidence_without_upload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    write_requirements(tmp_path / "projects", "web-project", "q1")
     reset_runtime()
     html = b"""<!doctype html><html><head><title>Official Results</title></head>
     <body><h1>Quarterly update</h1><p>Revenue reached 42 million in Q2.</p></body></html>"""
@@ -104,3 +141,28 @@ async def test_public_web_source_can_create_evidence_without_upload(
 def test_media_url_cannot_self_declare_as_s_tier() -> None:
     assert project_sources._effective_web_tier("https://finance.example.com/report", "S")[0] == "B"
     assert project_sources._effective_web_tier("https://www.hkexnews.hk/listedco/report.pdf", "S")[0] == "S"
+
+
+@pytest.mark.anyio
+async def test_evidence_tool_refuses_project_without_requirement_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """项目还没有需求清单时，不允许先记录 EvidenceRecord 再补要求。"""
+    monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    reset_runtime()
+
+    payload = json.loads(await project_sources.record_project_evidence(
+        "no-plan-project",
+        "q1",
+        "claim",
+        "src_missing",
+        1,
+        "chunk_missing",
+        "excerpt",
+        json.dumps({"locator_type": "offset"}),
+    ))
+
+    assert payload["ok"] is False
+    assert payload["error"] == "missing_research_requirements"
+    reset_runtime()

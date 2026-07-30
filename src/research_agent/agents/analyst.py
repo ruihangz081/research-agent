@@ -13,6 +13,7 @@ from rich.console import Console
 from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
+from ..research_plan import plan_prompt_context
 from ..tools import default_registry
 from .source_context import source_context
 
@@ -49,6 +50,7 @@ async def run_analysis(state: "ProjectState") -> Path:
     raw_rounds_str = "\n".join(f"  - {p}" for p in raw_rounds) or "  （无）"
 
     system_prompt = _load_analyst_prompt()
+    system_prompt += plan_prompt_context(state)
     system_prompt += source_context(state)
     replacements = {
         "{outline_path}": str(outline_path),
@@ -69,6 +71,7 @@ async def run_analysis(state: "ProjectState") -> Path:
         f"- 验证报告：`{validation_report_path}`\n"
         f"- 原始数据文件：\n{raw_rounds_str}\n"
         f"- 分析报告输出路径：`{analysis_path}`\n"
+        f"- 研究需求清单：`{state.project_dir / config.FILE_RESEARCH_REQUIREMENTS}`\n"
     )
 
     options = AgentOptions(

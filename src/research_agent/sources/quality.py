@@ -19,11 +19,23 @@ class QualityStatus(str, Enum):
 
 @dataclass(frozen=True)
 class ResearchRequirement:
+    """One deterministic pass condition for a fixed research question.
+
+    The full set is produced before research starts (see `research_plan`), never
+    derived from the evidence that happens to exist. `text` is carried only so
+    gate reasons can name the question a user would recognise.
+    """
+
     question_id: str
     required: bool = True
     min_supported: int = 1
     require_numeric: bool = False
     min_source_tier: str | None = None
+    text: str = ""
+
+    @property
+    def label(self) -> str:
+        return f"{self.question_id} ({self.text})" if self.text else self.question_id
 
 
 @dataclass
@@ -78,7 +90,17 @@ class QualityGate:
             coverage[requirement.question_id] = ratio
             if requirement.required and ratio < 1:
                 missing_required = True
-                reasons.append(f"research question {requirement.question_id} coverage {ratio:.0%} below threshold")
+                reasons.append(f"research question {requirement.label} coverage {ratio:.0%} below threshold")
+        # Evidence pointing at an unknown question is never silently dropped: it either
+        # signals a stale requirement file or an agent inventing IDs, and both must stay
+        # visible in the gate result rather than disappearing from coverage.
+        known_ids = {requirement.question_id for requirement in requirements}
+        unknown_ids = sorted({item.research_question_id for item in evidence if item.research_question_id not in known_ids})
+        if unknown_ids:
+            reasons.append(
+                "evidence references research questions outside the fixed requirement set: "
+                + ", ".join(unknown_ids)
+            )
         for item in valid:
             if item.source_tier == "S":
                 continue
@@ -87,7 +109,11 @@ class QualityGate:
                 reasons.append(f"evidence {item.evidence_id} lacks direct S or independent corroboration")
         if not evidence:
             reasons.append("no evidence records are available")
-        if invalid_count or has_contradiction or not evidence:
+        # An empty requirement set would make every project trivially pass. Treat it as a
+        # missing research plan, not as "nothing to check".
+        if not requirements:
+            reasons.append("the fixed research requirement set is empty; no delivery can be validated")
+        if invalid_count or has_contradiction or not evidence or not requirements:
             status = QualityStatus.BLOCKED
         elif any(source.status == SourceStatus.NEEDS_REVIEW for source in sources.values()):
             status = QualityStatus.NEEDS_HUMAN_REVIEW

@@ -123,8 +123,48 @@ python -m research_agent new "新能源汽车行业"
 系统会：
 1. 创建项目目录 `projects/新能源汽车行业_20260424/`
 2. Agent1 判断信息是否充分；不足时向你提问澄清（可跳过，用建议默认值）
-3. 生成提纲 → 你确认后 → 继续推进后续阶段
+3. 生成提纲，并同步固化研究需求清单 `research_requirements.json` → 你确认后 → 继续推进后续阶段
 4. 全部完成后输出 Markdown、真实图表、安全 HTML、LaTeX 源文件和统一正式 PDF
+
+### 研究需求清单（确定性完整性门禁）
+
+Agent1 生成提纲时，会把提纲《核心研究问题》小节固化成 `research_requirements.json`：
+
+```json
+{
+  "schema_version": 1,
+  "topic": "新能源汽车行业",
+  "source_outline": "0a1b2c3d4e5f6789",
+  "requirements": [
+    {
+      "question_id": "q1",
+      "text": "2024 年市场规模是多少？",
+      "required": true,
+      "min_supported": 1,
+      "min_source_tier": null,
+      "require_numeric": false
+    }
+  ]
+}
+```
+
+这份清单是全流程唯一的问题标识来源：
+
+- Agent2/3/4/5 的 prompt 都注入同一张表，`RecordProjectEvidence` 的 `research_question_id` 必须取自其中，表外 ID 会被工具拒绝
+- 确定性质量门读取**清单全集**判定覆盖率，而不是从已有证据反推。必答问题一条证据都没有时同样会被检测到并阻断交付
+- `source_outline` 绑定生成清单时的提纲摘要；当前 `01_outline.md` 发生变化后，旧清单立即失效，必须重新确认研究范围
+- 需要收紧某个问题的通过条件（最低证据数、最低来源等级、是否要求数值），直接编辑该文件即可；改成 `"required": false` 的问题缺证据不会单独阻断交付
+
+提纲缺少可解析的《核心研究问题》有序列表，或者清单缺失、为空、`question_id` 重复、JSON 损坏、与当前提纲摘要不一致时，交付一律阻断，不会用章节标题、通用问题或空要求放行。
+
+**旧项目迁移**：本机制上线前创建的项目没有这个文件。用以下命令从既有提纲重建，或在工作台的「需要重新确认研究计划」面板点击「生成研究需求清单」：
+
+```bash
+python -m research_agent migrate-plan projects/新能源汽车行业_20260424
+```
+
+迁移只固定问题清单，不补造证据——必答问题仍需要合格证据才能通过交付门禁。
+已有且与当前提纲匹配的有效清单不会被迁移命令覆盖，以免丢失人工收紧的证据门槛或重新分配问题 ID。
 
 ### 断点续跑
 
@@ -154,6 +194,7 @@ python -m research_agent retry projects/新能源汽车行业_20260424 --extra-r
 |---|---|
 | 采集验证轮次用尽但证据未收敛 | 追加轮次预算（默认 +1 轮），从下一轮继续补采验证 |
 | 交付前证据门槛阻断（分析/排版阶段） | 回退到采集验证阶段重新补证据 |
+| 缺少研究需求清单 | 重试被拒绝，需先执行 `migrate-plan` 或在工作台生成清单 |
 | 其他 Agent 阶段报错 | 原地重跑该阶段 |
 
 轮次预算没有硬上限，避免项目彻底卡死；超过 10 轮后重试提示会附带成本提醒，建议此时改为在材料中心补充权威材料。
@@ -181,9 +222,10 @@ research-agent/
 ├── pyproject.toml
 ├── .env.example
 ├── src/research_agent/
-│   ├── __main__.py           # CLI 入口（new / resume / retry / delete / status）
+│   ├── __main__.py           # CLI 入口（new / resume / retry / delete / status / migrate-plan）
 │   ├── config.py             # 全局配置与常量
 │   ├── state.py              # 11 阶段状态机 + JSON 持久化 + 失败/重试标记 + 澄清历史
+│   ├── research_plan.py      # 研究需求清单：提纲派生、schema 校验、全流程 question_id 契约
 │   ├── checkpoints.py        # 3 个人机确认检查点（Rich CLI 渲染与询问）
 │   ├── run_log.py            # 按项目持久化执行日志（run_log.jsonl）
 │   ├── token_usage.py        # Token 用量采集、按阶段聚合、跨项目汇总
@@ -207,6 +249,7 @@ research-agent/
 │       ├── run_log.jsonl
 │       ├── token_usage.jsonl
 │       ├── 01_outline.md
+│       ├── research_requirements.json
 │       ├── 02_sources_draft.md
 │       ├── 02_sources_final.md
 │       ├── 03_raw_data/
@@ -229,7 +272,7 @@ research-agent/
 
 | Agent | 职责 | 工具权限 | 输出 |
 |---|---|---|---|
-| **Agent1 战略规划** | 澄清目标/范围/交付物（必要时向用户提问）→ 生成提纲 | Read, Write, AskUser（Web） | `01_outline.md` |
+| **Agent1 战略规划** | 澄清目标/范围/交付物（必要时向用户提问）→ 生成提纲 → 固化研究需求清单 | Read, Write, AskUser（Web） | `01_outline.md` + `research_requirements.json` |
 | **Agent2 数据搜集** | 信息源识别+S/A/B/D分层 + 按级采集 | Read, Write, WebSearch, WebFetch | `02_sources_draft.md` + `round_N.md` |
 | **Agent3 信息验证** | 原文回查、EvidenceRecord、冲突检测、淘汰低质源 | ReadProjectSource, RecordProjectEvidence, Write | `feedback_round_N.json` + `03_validation_report.md` |
 | **Agent4 深度分析** | 波特五力/SWOT/PEST + 定量分析 | Read, Write, WebSearch, WebFetch | `04_analysis.md` |

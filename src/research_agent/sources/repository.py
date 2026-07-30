@@ -189,6 +189,15 @@ class SQLiteRepository:
             args.append(source_id)
         return [EvidenceRecord.model_validate_json(row[0]) for row in self._connection.execute(query, args)]
 
+    def delete_evidence(self, evidence_id: str, project_id: str) -> bool:
+        """Remove one evidence record. Used when evidence is retracted or invalidated."""
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "DELETE FROM evidence WHERE evidence_id=? AND project_id=?",
+                (evidence_id, project_id),
+            )
+        return cursor.rowcount > 0
+
     def put_job(self, job: Job) -> bool:
         with self._lock, self._connection:
             try:

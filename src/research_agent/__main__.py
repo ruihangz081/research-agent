@@ -8,6 +8,9 @@
     # 断点续跑（传入项目目录路径）
     python -m research_agent resume projects/新能源汽车行业_20260423
 
+    # 旧项目迁移：从现有提纲重建研究需求清单
+    python -m research_agent migrate-plan projects/新能源汽车行业_20260423
+
     # 重试失败的项目（保留既有产物，仅复位失败阶段）
     python -m research_agent retry projects/新能源汽车行业_20260423
 
@@ -30,6 +33,7 @@ from rich.console import Console
 
 from . import config, orchestrator
 from .orchestrator import PipelineError
+from .research_plan import ResearchPlanError, load_plan_or_none
 from .state import ProjectState
 from .sources.cli import configure_parser as configure_source_parser
 
@@ -147,6 +151,33 @@ def _cmd_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_migrate_plan(args: argparse.Namespace) -> int:
+    """从现有提纲重建研究需求清单（旧项目唯一的兼容路径）。"""
+    project_dir = Path(args.project_dir).resolve()
+    if not project_dir.exists():
+        console.print(f"[red]项目目录不存在：{project_dir}[/red]")
+        return 2
+
+    try:
+        state = ProjectState.load(project_dir)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        return 2
+
+    try:
+        message = orchestrator.migrate_research_plan(state)
+    except ResearchPlanError as e:
+        console.print(f"[red]{e}[/red]")
+        return 2
+
+    console.print(
+        f"\n[bold green]✓ 研究需求清单已重建[/bold green]\n"
+        f"[dim]{message}[/dim]\n"
+        f"[dim]清单文件：{state.research_plan_path}[/dim]\n"
+    )
+    return 0
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     project_dir = Path(args.project_dir).resolve()
     try:
@@ -167,6 +198,18 @@ def _cmd_status(args: argparse.Namespace) -> int:
         f"  分析：{state.analysis_path or '—'}\n"
         f"  终稿：{state.final_report_path or '—'}\n"
     )
+    plan = load_plan_or_none(state)
+    if plan is None:
+        console.print(
+            "[yellow]  研究需求清单：缺失或损坏 —— 交付将被阻断[/yellow]\n"
+            f"[yellow]  请运行：python -m research_agent migrate-plan {project_dir}[/yellow]\n"
+        )
+    else:
+        required = len(plan.required_question_ids)
+        console.print(
+            f"  研究需求清单：{len(plan.requirements)} 个问题（必答 {required} 个）"
+            f" · {', '.join(plan.question_ids)}\n"
+        )
     if state.failed_stage or state.last_error:
         console.print(
             f"[red]  失败阶段：{state.failed_stage or state.stage.value}[/red]\n"
@@ -212,6 +255,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = sub.add_parser("status", help="查看项目当前状态")
     p_status.add_argument("project_dir", type=str, help="项目目录路径")
     p_status.set_defaults(func=_cmd_status)
+
+    p_migrate = sub.add_parser(
+        "migrate-plan",
+        help="旧项目迁移：从现有提纲重建研究需求清单（research_requirements.json）",
+    )
+    p_migrate.add_argument("project_dir", type=str, help="项目目录路径")
+    p_migrate.set_defaults(func=_cmd_migrate_plan)
 
     return parser
 

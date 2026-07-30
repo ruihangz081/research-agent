@@ -29,11 +29,10 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from rich.console import Console
 
-from . import checkpoints, config, token_usage
+from . import checkpoints, config, research_plan, token_usage
 from .agent_loop import AgentLoopStuckError
 from .agents import analyst, collector, formatter, strategist, validator
-from .sources.enums import VerificationStatus
-from .sources.quality import ResearchRequirement
+from .research_plan import ResearchPlanError
 from .sources.runtime import get_service
 from .state import ProjectState, Stage
 
@@ -130,6 +129,16 @@ class QualityGateError(PipelineError):
     pass
 
 
+class ResearchPlanBlockedError(PipelineError):
+    """研究需求清单缺失、为空或损坏；迁移完成前不得交付。
+
+    单独成类，是为了让 Web 与 CLI 都能把它与"证据不足"区分开：证据不足靠补采解决，
+    需求清单缺失需要用户先重新确认研究计划。
+    """
+
+    pass
+
+
 def _quality_gate_error(state: ProjectState, max_rounds: int) -> QualityGateError:
     """构造审查未通过的错误，并标记为可重试。"""
     reasons = "; ".join(state.notes.get("quality_gate_reasons", [])) or "未给出具体原因"
@@ -142,17 +151,31 @@ def _quality_gate_error(state: ProjectState, max_rounds: int) -> QualityGateErro
     return error
 
 
+def _fixed_requirements(state: ProjectState) -> list[Any]:
+    """读取研究开始阶段固定下来的完整需求集合。
+
+    这是 R1 的核心：需求集合与"已经找到了什么证据"完全无关。缺失或损坏时抛
+    `ResearchPlanBlockedError`，绝不退化为空集合。
+    """
+    try:
+        plan = research_plan.require_plan(state)
+    except ResearchPlanError as exc:
+        raise ResearchPlanBlockedError(str(exc)) from exc
+    return plan.as_requirements()
+
+
 def _deterministic_convergence(state: ProjectState, feedback: validator.ValidationFeedback) -> bool:
-    """A model convergence claim is advisory; persisted evidence decides readiness."""
+    """A model convergence claim is advisory; the fixed requirement set decides readiness."""
     service = get_service(config.SOURCE_DATA_DIR)
     project_id = state.project_dir.name
-    evidence = service.repository.list_evidence(project_id)
-    supported_questions = sorted({
-        item.research_question_id
-        for item in evidence
-        if item.verification_status == VerificationStatus.SUPPORTED
-    })
-    requirements = [ResearchRequirement(question_id=value) for value in supported_questions]
+    try:
+        requirements = _fixed_requirements(state)
+    except ResearchPlanBlockedError as exc:
+        # 需求清单缺失时不能宣布收敛；把原因留在 notes 里供工作台与 CLI 展示。
+        state.notes["quality_gate"] = "blocked"
+        state.notes["quality_gate_reasons"] = [str(exc)]
+        state.save()
+        return False
     gate = service.quality_gate(project_id, requirements)
     unresolved_conflicts = [item.topic for item in feedback.conflicts if not item.resolution]
     reasons = list(gate.reasons)
@@ -170,6 +193,7 @@ def _deterministic_convergence(state: ProjectState, feedback: validator.Validati
     ready = feedback.converged and not unresolved_conflicts and gate.passed
     state.notes["quality_gate"] = gate.status.value
     state.notes["quality_gate_reasons"] = sorted(set(reasons))
+    state.notes["research_question_coverage"] = gate.coverage
     return ready
 
 
@@ -177,9 +201,16 @@ def _assert_delivery_ready(state: ProjectState) -> None:
     service = get_service(config.SOURCE_DATA_DIR)
     project_id = state.project_dir.name
     sources = service.list_sources(project_id, include_superseded=True)
-    evidence = service.repository.list_evidence(project_id)
-    questions = sorted({item.research_question_id for item in evidence if item.verification_status == VerificationStatus.SUPPORTED})
-    gate = service.quality_gate(project_id, [ResearchRequirement(question_id=value) for value in questions])
+    # 需求清单缺失先于证据检查阻断：不知道要回答什么问题时，"证据够不够"没有意义。
+    try:
+        requirements = _fixed_requirements(state)
+    except ResearchPlanBlockedError as exc:
+        state.notes["delivery_blocked_stage"] = "research_plan"
+        state.save()
+        state.mark_failure("研究需求清单", str(exc))
+        raise
+    gate = service.quality_gate(project_id, requirements)
+    state.notes["research_question_coverage"] = gate.coverage
     if not gate.passed:
         materials_url = f"/materials?project={project_id}"
         state.notes["quality_gate"] = gate.status.value
@@ -205,11 +236,18 @@ def _assert_delivery_ready(state: ProjectState) -> None:
         )
         state.mark_failure("交付证据门槛", str(error))
         raise error
+    state.notes["quality_gate"] = gate.status.value
+    state.notes["quality_gate_reasons"] = gate.reasons
+    state.notes.pop("delivery_blocked_stage", None)
+    state.save()
 
 
 def recover_blocked_delivery(state: ProjectState) -> bool:
     """Rewind an invalid legacy delivery state for web or uploaded evidence."""
     if state.stage not in {Stage.ANALYZING, Stage.FORMATTING}:
+        return False
+    if state.notes.get("research_plan_migration_required"):
+        # 需求清单缺失不是"证据不够"，回退到采集验证只会再次撞上同一道门。
         return False
     if state.notes.get("delivery_blocked_stage") != "evidence" and state.notes.get("quality_gate") != "blocked":
         return False
@@ -227,6 +265,51 @@ def recover_blocked_delivery(state: ProjectState) -> bool:
 
 
 # ═════════════════════════════════════════════════════════════════
+# 旧项目迁移：从现有提纲重建研究需求清单
+# ═════════════════════════════════════════════════════════════════
+
+
+def research_plan_migration_required(state: ProjectState) -> bool:
+    return bool(state.notes.get("research_plan_migration_required"))
+
+
+def migrate_research_plan(state: ProjectState) -> str:
+    """显式迁移：从项目现有提纲重建 `research_requirements.json`。
+
+    这是唯一的兼容路径——不使用空需求集合，也不按已有证据反推。用户必须显式触发
+    （CLI `migrate-plan` 或工作台按钮），因为重建后的清单需要人工确认是否符合预期。
+    """
+    try:
+        research_plan.load_plan(state)
+    except ResearchPlanError:
+        pass
+    else:
+        state.notes.pop("research_plan_migration_required", None)
+        state.notes.pop("research_plan_error", None)
+        state.save()
+        raise ResearchPlanError(
+            f"项目已经存在与当前提纲匹配的有效 {config.FILE_RESEARCH_REQUIREMENTS}，"
+            "迁移仅用于清单缺失、损坏或与提纲不一致的旧项目；现有清单未被覆盖。"
+        )
+
+    plan, warning = research_plan.rebuild_plan(state)
+    state.notes.pop("delivery_blocked_stage", None)
+    state.notes["quality_gate"] = "revalidating"
+    state.notes["quality_gate_reasons"] = []
+    state.clear_failure()
+    state.save()
+    message = (
+        f"已从现有提纲重建研究需求清单，共 {len(plan.requirements)} 个研究问题："
+        f"{', '.join(plan.question_ids)}。"
+        "请查阅 research_requirements.json 确认无误后继续推进；"
+        "必答问题缺证据时仍会被质量门阻断。"
+    )
+    if warning:
+        message += f" 注意：{warning}"
+    return message
+
+
+# ═════════════════════════════════════════════════════════════════
 # 失败重试
 # ═════════════════════════════════════════════════════════════════
 
@@ -240,6 +323,13 @@ def retry_blocked_reason(state: ProjectState) -> str | None:
     """返回阻止重试的原因；None 表示可以重试。"""
     if state.stage == Stage.DONE:
         return "项目已完成，无需重试"
+    if research_plan_migration_required(state):
+        # 需求清单缺失时重试只会再次撞上同一道门；必须先显式迁移。
+        return (
+            "该项目缺少研究需求清单，重试无法解决。请先重建需求清单："
+            "工作台点击“生成研究需求清单”，或运行 "
+            f"`python -m research_agent migrate-plan {state.project_dir}`。"
+        )
     if not can_retry(state):
         return "项目当前没有失败记录，可直接点击继续运行"
     return None
@@ -551,6 +641,15 @@ async def run_state_machine(state: ProjectState, host: PipelineHost) -> None:
             else:
                 state.outline_path = str(outcome.outline_path)
                 state.notes.pop("clarification_questions", None)
+                # R1：提纲与需求清单在同一阶段固化，保证两者天然一致；
+                # Agent1 重新生成提纲时这里会重新派生，不存在漂移窗口。
+                plan, warning = research_plan.rebuild_plan(state)
+                host.log(
+                    f"已固定研究需求清单：{len(plan.requirements)} 个研究问题"
+                    f"（{', '.join(plan.question_ids)}）"
+                )
+                if warning:
+                    host.log(f"需求清单提示：{warning}")
                 state.advance_to(Stage.AWAIT_OUTLINE_APPROVAL)
                 host.log("调研提纲已生成，等待审批")
 

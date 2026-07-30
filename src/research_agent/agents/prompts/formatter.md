@@ -17,6 +17,7 @@
 ## 不可违反的边界
 
 - 事实和数字只能来自已验证输入，保留完整 `[src:source_id:vN, locator]` 引用。
+- 报告结构必须覆盖 system prompt 中固定研究需求清单里的每个必答 `question_id`；确定性质量门已确认它们有合格证据，报告不得遗漏。
 - 不修改 Agent4 的核心结论，不补造缺失数据，不虚构评级或预测。
 - Markdown 中的真实图表位置使用独立一行 `{{chart:<id>}}`，并在 JSON 中提供同名条目。
 - 不输出 ASCII 图、“建议插入图表”、Python、JavaScript、TikZ、SVG 或完整 LaTeX。

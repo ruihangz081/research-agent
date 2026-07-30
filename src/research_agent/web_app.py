@@ -28,12 +28,15 @@ from .orchestrator import (
     CheckpointSpec,
     DeliveryBlockedError,
     PipelineError,
+    ResearchPlanBlockedError,
     StrategistOutcome,
     _append_clarification,
     _assert_delivery_ready,
     checkpoint_for,
+    migrate_research_plan,
     prepare_retry,
     recover_blocked_delivery,
+    research_plan_migration_required,
     retry_blocked_reason,
     run_state_machine,
 )
@@ -41,6 +44,7 @@ from .report_layout import (
     FILE_FINAL_REPORT_TEX,
     generate_typeset_artifacts,
 )
+from .research_plan import ResearchPlanError, load_plan_or_none
 from .state import ProjectState, Stage
 from .tools import default_registry
 from .tools.builtins.web_search import SUPPORTED_PROVIDERS, web_search
@@ -318,6 +322,13 @@ def _artifact_paths(state: ProjectState) -> list[tuple[str, str, Path | None]]:
     artifacts: list[tuple[str, str, Path | None]] = [
         ("outline", "调研提纲", Path(state.outline_path) if state.outline_path else None),
         (
+            "research_requirements",
+            "研究需求清单",
+            Path(state.research_plan_path)
+            if state.research_plan_path
+            else state.project_dir / config.FILE_RESEARCH_REQUIREMENTS,
+        ),
+        (
             "sources_draft",
             "信息源草案",
             Path(state.sources_draft_path) if state.sources_draft_path else None,
@@ -410,6 +421,28 @@ def _checkpoint_file(state: ProjectState) -> dict[str, str] | None:
     return {"key": spec.key, "title": spec.title} if spec else None
 
 
+def _research_plan_payload(state: ProjectState) -> dict[str, Any]:
+    """需求清单在工作台的可见状态。缺失时前端显示迁移入口。"""
+    plan = load_plan_or_none(state)
+    if plan is None:
+        return {
+            "available": False,
+            "migration_required": research_plan_migration_required(state),
+            "error": state.notes.get("research_plan_error"),
+            "requirements": [],
+            "coverage": state.notes.get("research_question_coverage", {}),
+        }
+    return {
+        "available": True,
+        "migration_required": False,
+        "schema_version": plan.schema_version,
+        "error": None,
+        "warning": state.notes.get("research_plan_warning"),
+        "requirements": [item.model_dump() for item in plan.requirements],
+        "coverage": state.notes.get("research_question_coverage", {}),
+    }
+
+
 def _serialize_state(state: ProjectState) -> dict[str, Any]:
     project_id = _project_id(state.project_dir)
     job = _job(project_id)
@@ -450,6 +483,7 @@ def _serialize_state(state: ProjectState) -> dict[str, Any]:
         "retry_blocked_reason": blocked_reason if failed else None,
         "quality_gate": state.notes.get("quality_gate"),
         "quality_gate_reasons": state.notes.get("quality_gate_reasons", []),
+        "research_plan": _research_plan_payload(state),
         "clarification_questions": state.notes.get("clarification_questions", []),
         "clarification": state.clarification,
         "token_usage": state.token_usage or {},
@@ -638,6 +672,10 @@ async def _run_until_pause(project_id: str) -> None:
                 _log(project_id, "检测到旧的无证据交付状态，已回到采集验证阶段")
             await run_state_machine(state, WebPipelineHost(project_id))
             job["status"] = "idle"
+        except ResearchPlanBlockedError as exc:
+            # 与"证据不足"区分：需要用户先重新确认研究计划，补采无法解决。
+            job["status"] = "error"
+            _log(project_id, f"研究需求清单缺失，交付已阻断：{exc}")
         except DeliveryBlockedError as exc:
             job["status"] = "idle"
             _log(project_id, f"交付已暂停：{exc}")
@@ -881,6 +919,24 @@ async def api_submit_clarification(
     )
     _schedule(project_id)
     return _serialize_state(state)
+
+
+@app.post("/api/projects/{project_id}/research-plan/migrate")
+async def api_migrate_research_plan(project_id: str) -> dict[str, Any]:
+    """旧项目迁移：从现有提纲重建研究需求清单。
+
+    这是唯一的兼容入口，必须由用户显式触发——重建出的清单需要人工确认是否符合预期。
+    """
+    state = _load_state(project_id)
+    job = _job(project_id)
+    if job["running"]:
+        raise HTTPException(status_code=409, detail="项目正在运行，请等待当前阶段结束")
+    try:
+        message = migrate_research_plan(state)
+    except ResearchPlanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _log(project_id, message)
+    return {"ok": True, "message": message, "project": _serialize_state(state)}
 
 
 @app.post("/api/projects/{project_id}/continue")

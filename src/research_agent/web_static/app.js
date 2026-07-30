@@ -88,6 +88,45 @@ function previewableArtifacts(project) {
   return project.artifacts;
 }
 
+function renderResearchPlan(project) {
+  const plan = project.research_plan || { available: false, requirements: [] };
+  const migratePanel = $("planMigratePanel");
+  migratePanel.classList.toggle("hidden", plan.available !== false);
+  if (plan.available === false) {
+    $("planMigrateError").textContent = plan.error || "项目缺少 research_requirements.json。";
+  }
+
+  const panel = $("planPanel");
+  panel.classList.toggle("hidden", !plan.available);
+  if (!plan.available) return;
+
+  const coverage = plan.coverage || {};
+  const requirements = plan.requirements || [];
+  const met = requirements.filter((item) => (coverage[item.question_id] ?? 0) >= 1).length;
+  $("planBadge").textContent = `${met} / ${requirements.length} 达标`;
+  const rows = requirements.map((item) => {
+    const ratio = coverage[item.question_id];
+    const label = ratio === undefined ? "未评估" : `${Math.round(ratio * 100)}%`;
+    // 只有"必答且未达标"才是阻断项；可选问题缺证据不单独阻断交付
+    const tone = ratio === undefined ? "" : ratio >= 1 ? "success" : item.required ? "danger" : "warning";
+    return `<tr>
+      <td><code>${Lumitrace.escapeHtml(item.question_id)}</code></td>
+      <td>${Lumitrace.escapeHtml(item.text)}</td>
+      <td>${item.required ? "必答" : "可选"}</td>
+      <td>${item.min_supported}</td>
+      <td>${Lumitrace.escapeHtml(item.min_source_tier || "不限")}</td>
+      <td>${item.require_numeric ? "是" : "否"}</td>
+      <td><span class="status-pill ${tone}">${label}</span></td>
+    </tr>`;
+  }).join("");
+  const warning = plan.warning
+    ? `<p class="muted">提示：${Lumitrace.escapeHtml(plan.warning)}</p>`
+    : "";
+  $("planTable").innerHTML = `${warning}<div class="table-scroll"><table class="data-table"><thead><tr>
+      <th>question_id</th><th>研究问题</th><th>必答</th><th>最低证据数</th><th>最低来源等级</th><th>需数值</th><th>覆盖</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
 function renderArtifacts(project) {
   const artifacts = previewableArtifacts(project);
   if (!state.artifactKey || !artifacts.some((item) => item.key === state.artifactKey)) {
@@ -160,6 +199,7 @@ function renderProject(project) {
   renderClarification(project);
   renderCheckpoint(project);
   renderFailure(project);
+  renderResearchPlan(project);
   renderArtifacts(project);
   updateDownloads(project);
 }
@@ -234,6 +274,20 @@ async function retryProject(button) {
   }
 }
 
+async function migrateResearchPlan(button) {
+  state.busy = true;
+  Lumitrace.setButtonBusy(button, true, "生成中");
+  try {
+    const result = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/research-plan/migrate`, { method: "POST" });
+    Lumitrace.toast(result.message || "研究需求清单已生成");
+  } catch (error) { Lumitrace.toast(error.message, "danger"); }
+  finally {
+    Lumitrace.setButtonBusy(button, false);
+    state.busy = false;
+    await loadProject();
+  }
+}
+
 async function deleteProject(button) {
   state.busy = true;
   const confirmed = await Lumitrace.confirmAction({
@@ -285,6 +339,7 @@ $("retryBtn").addEventListener("click", () => retryProject($("retryBtn")));
 $("failureRetryBtn").addEventListener("click", () => retryProject($("failureRetryBtn")));
 $("deleteBtn").addEventListener("click", () => deleteProject($("deleteBtn")));
 $("failureDeleteBtn").addEventListener("click", () => deleteProject($("failureDeleteBtn")));
+$("planMigrateBtn").addEventListener("click", () => migrateResearchPlan($("planMigrateBtn")));
 $("approveBtn").addEventListener("click", () => approve(true));
 $("rejectBtn").addEventListener("click", () => approve(false));
 $("downloadPdfBtn").addEventListener("click", () => openDownload("/download/final-report.pdf"));

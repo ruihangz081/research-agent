@@ -16,11 +16,11 @@ from ..agent_skills import load_project_skill
 from ..llm import LLMClient
 from ..report_charts import load_chart_manifest
 from ..report_layout import generate_typeset_artifacts
+from ..research_plan import ResearchPlanError, plan_prompt_context, require_plan
 from ..sources.runtime import get_service
 from ..sources.citations import render_citation, validate_report_citations
 from ..sources.enums import VerificationStatus
 from ..sources.models import EvidenceRecord, SourceAsset
-from ..sources.quality import ResearchRequirement
 from ..tools import default_registry
 from .source_context import source_context
 
@@ -43,10 +43,13 @@ def _require_delivery_evidence(
         for item in evidence
         if item.verification_status == VerificationStatus.SUPPORTED
     ]
-    requirements = [
-        ResearchRequirement(question_id=value)
-        for value in sorted({item.research_question_id for item in supported})
-    ]
+    # R1：要求集合来自研究开始阶段固化的清单，不是从 supported 证据反推。
+    # 缺失清单一律阻断，绝不按空集合放行。
+    try:
+        requirements = require_plan(state).as_requirements()
+    except ResearchPlanError as exc:
+        state.save()
+        raise RuntimeError(f"quality gate blocked final delivery: {exc}") from exc
     gate = service.quality_gate(project_id, requirements)
     sources = {
         source.source_id: source
@@ -54,6 +57,7 @@ def _require_delivery_evidence(
     }
     state.notes["quality_gate"] = gate.status.value
     state.notes["quality_gate_reasons"] = gate.reasons
+    state.notes["research_question_coverage"] = gate.coverage
     valid, errors = validate_report_citations(supported, sources)
     if not gate.passed:
         state.save()
@@ -128,6 +132,7 @@ async def run_formatting(state: "ProjectState") -> Path:
 
     skill = load_project_skill(config.REPORT_FORMATTING_SKILL)
     system_prompt = _load_formatter_prompt() + skill.prompt_context()
+    system_prompt += plan_prompt_context(state)
     system_prompt += source_context(state)
     replacements = {
         "{outline_path}": str(outline_path),

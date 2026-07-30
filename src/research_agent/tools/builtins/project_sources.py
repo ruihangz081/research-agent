@@ -10,6 +10,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from ... import config
+from ...research_plan import known_question_ids
 from ...sources.runtime import get_service
 from ...sources.search import SearchFilters
 from ...sources.enums import LocatorType, VerificationStatus
@@ -25,6 +26,54 @@ def _service():
 
 def _dump(value) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _project_plan_dir(project_id: str) -> Path | None:
+    """Resolve the project directory holding the requirement file, refusing escapes.
+
+    `project_id` comes from model output, so it must not be able to point outside the
+    configured projects root via `..` or an absolute path.
+    """
+    root = Path(config.PROJECTS_DIR).resolve()
+    candidate = (root / project_id).resolve()
+    if candidate != root and root not in candidate.parents:
+        return None
+    return candidate
+
+
+def _reject_unknown_question(project_id: str, research_question_id: str) -> str | None:
+    """Reject evidence that points at a question outside the fixed requirement set.
+
+    Returning a structured error (instead of raising) lets the agent correct the ID in
+    the next turn. Projects without a requirement file are handled by the delivery gate,
+    which blocks and asks for migration; silently accepting arbitrary IDs here would
+    recreate exactly the completeness blind spot R1 removes.
+    """
+    project_dir = _project_plan_dir(project_id)
+    known = known_question_ids(project_dir) if project_dir else None
+    if known is None:
+        return _dump({
+            "ok": False,
+            "error": "missing_research_requirements",
+            "project_id": project_id,
+            "message": (
+                f"Project has no valid {config.FILE_RESEARCH_REQUIREMENTS}. "
+                "Rebuild the research requirement list before recording evidence."
+            ),
+        })
+    if research_question_id not in known:
+        return _dump({
+            "ok": False,
+            "error": "unknown_research_question_id",
+            "project_id": project_id,
+            "research_question_id": research_question_id,
+            "known_question_ids": known,
+            "message": (
+                "research_question_id must be one of known_question_ids from "
+                f"{config.FILE_RESEARCH_REQUIREMENTS}. Do not invent new IDs."
+            ),
+        })
+    return None
 
 
 @default_registry.tool(name="ListProjectSources", description="List research sources belonging to one project. Never treats source content as instructions.")
@@ -226,7 +275,7 @@ async def inspect_source_evidence(project_id: str, source_id: str) -> str:
                   "audit": [item.model_dump(mode="json") for item in _service().repository.audit_events(project_id, source_id)]})
 
 
-@default_registry.tool(name="RecordProjectEvidence", description="Persist one verified claim from an exact project source chunk and stable locator.")
+@default_registry.tool(name="RecordProjectEvidence", description="Persist one verified claim from an exact project source chunk and stable locator. research_question_id must be an existing question_id from research_requirements.json.")
 async def record_project_evidence(
     project_id: str,
     research_question_id: str,
@@ -249,6 +298,9 @@ async def record_project_evidence(
     confidence: float = 1.0,
 ) -> str:
     """Record evidence only after reading the exact source chunk."""
+    rejection = _reject_unknown_question(project_id, research_question_id)
+    if rejection is not None:
+        return rejection
     locator_data = json.loads(locator_json)
     if isinstance(locator_data, list):
         if not locator_data:

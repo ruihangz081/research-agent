@@ -7,7 +7,28 @@ import pytest
 from research_agent import config
 from research_agent import orchestrator, run_log, web_app
 from research_agent.agents import validator
+from research_agent.research_plan import derive_plan_from_outline, save_plan
 from research_agent.state import ProjectState, Stage
+
+
+def fix_plan(state: ProjectState, *question_ids: str) -> None:
+    """写入研究开始阶段固定的需求清单（R1 后所有门禁都读取它）。"""
+    ids = question_ids or ("q1",)
+    outline_text = (
+        f"# 《{state.topic}》调研提纲\n\n## 二、核心研究问题\n"
+        + "\n".join(
+            f"{index}. 研究问题 {value}" for index, value in enumerate(ids, 1)
+        )
+        + "\n"
+    )
+    outline = state.project_dir / config.FILE_OUTLINE
+    outline.parent.mkdir(parents=True, exist_ok=True)
+    outline.write_text(outline_text, encoding="utf-8")
+    state.outline_path = str(outline)
+    plan, _ = derive_plan_from_outline(state.topic, outline_text)
+    for item, question_id in zip(plan.requirements, ids, strict=True):
+        item.question_id = question_id
+    save_plan(state, plan)
 
 
 @pytest.mark.anyio
@@ -169,6 +190,7 @@ async def test_web_delivery_gate_pauses_instead_of_reporting_agent_failure(
     web_app.LOCKS.clear()
     state = ProjectState(topic="blocked", date_str="20260720", stage=Stage.FORMATTING)
     state.save()
+    fix_plan(state, "q1")
 
     await web_app._run_until_pause(state.project_dir.name)
 
@@ -176,6 +198,83 @@ async def test_web_delivery_gate_pauses_instead_of_reporting_agent_failure(
     assert job["status"] == "idle"
     assert job["message"].startswith("交付已暂停：")
     assert "Agent5 未启动，本错误不会重试" in job["message"]
+
+
+@pytest.mark.anyio
+async def test_web_blocks_legacy_project_without_research_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Web 与 CLI 共用同一道需求清单门禁：缺清单时不静默放行，并给出迁移入口。"""
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
+    web_app.JOBS.clear()
+    web_app.LOCKS.clear()
+    state = ProjectState(topic="legacy-web", date_str="20260730", stage=Stage.FORMATTING)
+    state.project_dir.mkdir(parents=True, exist_ok=True)
+    outline = state.project_dir / config.FILE_OUTLINE
+    outline.write_text(
+        "# 提纲\n\n## 二、核心研究问题\n1. 市场规模有多大？\n2. 竞争格局如何？\n",
+        encoding="utf-8",
+    )
+    state.outline_path = str(outline)
+    state.save()
+    project_id = state.project_dir.name
+
+    await web_app._run_until_pause(project_id)
+
+    job = web_app.JOBS[project_id]
+    assert job["status"] == "error"
+    assert "研究需求清单缺失" in job["message"]
+
+    monkeypatch.setattr(web_app, "_schedule", lambda pid: None)
+    transport = httpx.ASGITransport(app=web_app.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        blocked = await client.get(f"/api/projects/{project_id}")
+        migrated = await client.post(
+            f"/api/projects/{project_id}/research-plan/migrate"
+        )
+        after = await client.get(f"/api/projects/{project_id}")
+
+    blocked_payload = blocked.json()
+    assert blocked_payload["research_plan"]["available"] is False
+    assert blocked_payload["research_plan"]["migration_required"] is True
+    # 需求清单缺失时重试无意义，必须先迁移
+    assert blocked_payload["can_retry"] is False
+    assert "migrate-plan" in blocked_payload["retry_blocked_reason"]
+
+    assert migrated.status_code == 200
+    assert "2 个研究问题" in migrated.json()["message"]
+    after_payload = after.json()
+    assert after_payload["research_plan"]["available"] is True
+    assert len(after_payload["research_plan"]["requirements"]) == 2
+
+
+@pytest.mark.anyio
+async def test_web_migration_does_not_overwrite_valid_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Web 迁移入口与 CLI 一样，只允许修复缺失或失效的清单。"""
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
+    web_app.JOBS.clear()
+    web_app.LOCKS.clear()
+    state = ProjectState(topic="valid-plan", date_str="20260730", stage=Stage.FORMATTING)
+    state.save()
+    fix_plan(state, "q1")
+    plan_path = state.project_dir / config.FILE_RESEARCH_REQUIREMENTS
+    before = plan_path.read_bytes()
+
+    transport = httpx.ASGITransport(app=web_app.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/projects/{state.project_dir.name}/research-plan/migrate"
+        )
+
+    assert response.status_code == 400
+    assert "现有清单未被覆盖" in response.json()["detail"]
+    assert plan_path.read_bytes() == before
 
 
 @pytest.mark.anyio
@@ -392,7 +491,10 @@ async def test_agent_stage_failure_is_surfaced_and_retryable(
 
     async def working_strategist(_state: ProjectState, _feedback=None) -> Path:
         outline.parent.mkdir(parents=True, exist_ok=True)
-        outline.write_text("# outline", encoding="utf-8")
+        outline.write_text(
+            "# 调研提纲\n\n## 二、核心研究问题\n1. 市场规模是多少？\n",
+            encoding="utf-8",
+        )
         return outline
 
     monkeypatch.setattr(web_app, "_run_web_strategist", working_strategist)
@@ -426,6 +528,7 @@ async def test_blocked_final_approval_becomes_retryable(
         stage=Stage.AWAIT_FINAL_SOURCE_APPROVAL,
     )
     state.save()
+    fix_plan(state, "q1")
     project_id = state.project_dir.name
     monkeypatch.setattr(web_app, "_schedule", lambda pid: None)
 
@@ -465,6 +568,7 @@ async def test_quality_gate_failure_marks_project_retryable(
     state.outline_path = str(state.project_dir / config.FILE_OUTLINE)
     state.sources_draft_path = str(state.project_dir / config.FILE_SOURCES_DRAFT)
     state.save()
+    fix_plan(state, "q1")
     project_id = state.project_dir.name
 
     raw_dir = state.project_dir / config.FILE_RAW_DATA_DIR
@@ -581,7 +685,10 @@ async def test_web_host_pauses_at_checkpoints_and_shares_one_state_machine(
     outline = state.project_dir / config.FILE_OUTLINE
 
     async def fake_strategist(target: ProjectState, feedback=None) -> Path:
-        outline.write_text("# outline", encoding="utf-8")
+        outline.write_text(
+            "# 调研提纲\n\n## 二、核心研究问题\n1. 市场规模是多少？\n",
+            encoding="utf-8",
+        )
         return outline
 
     monkeypatch.setattr(web_app, "_run_web_strategist", fake_strategist)

@@ -38,6 +38,8 @@ PROJECT_SKILLS_DIR: Path = PROJECT_ROOT / "skills"
 
 # === 产物文件名（每阶段固定） ===
 FILE_OUTLINE = "01_outline.md"
+# R1：研究开始阶段固定下来的必答问题清单，全流程共用同一组 question_id
+FILE_RESEARCH_REQUIREMENTS = "research_requirements.json"
 FILE_SOURCES_DRAFT = "02_sources_draft.md"
 FILE_SOURCES_FINAL = "02_sources_final.md"
 FILE_RAW_DATA_DIR = "03_raw_data"

@@ -31,7 +31,7 @@
 
 | 项 | 主题 | 状态 |
 |---|---|---|
-| R1 | 研究要求由已有证据反推，存在完整性盲区 | 待处理 |
+| R1 | 研究要求由已有证据反推，存在完整性盲区 | ✅ 2026-07-30 |
 | R2 | Agent4 可绕过证据链引入新事实 | 待处理 |
 | R3 | Agent2↔3 缺少结构化补研任务协议 | 待处理 |
 | R4 | 缺少 Claim—Evidence 关系与报告引用覆盖门禁 | 待处理 |
@@ -216,7 +216,7 @@ WAL 模式下多连接可工作，但这种混合模式迟早出问题。
 
 ## R1. 研究要求由已有证据反推，存在完整性盲区
 
-- [ ] 待处理
+- [x] 已完成（2026-07-30）—— 见文末「已完成」区
 
 **问题**
 
@@ -364,6 +364,32 @@ Agent Loop 只会把相对路径解析到 `options.cwd`；如果模型传入绝�
 ---
 
 ## 已完成
+
+### 固定研究需求清单（2026-07-30，对应 R1）
+
+原问题：`_deterministic_convergence()`、`_assert_delivery_ready()` 和 `formatter._require_delivery_evidence()` 都从状态为 `SUPPORTED` 的 EvidenceRecord 里提取 `research_question_id`，再据此构造 `ResearchRequirement`。系统根据"已经找到了什么"决定"应该检查什么"——某个必答问题一条证据都没找到时，它压根不会进入质量门的要求集合，于是被静默放过。
+
+关键设计——需求清单由提纲派生，而不是让模型另写一份 JSON。新增 `research_plan.py`：Agent1 写出提纲的**同一个阶段**，程序确定性地解析《核心研究问题》小节，固化成 `research_requirements.json`。清单保存 `source_outline` 摘要，后续每次读取都与项目内当前提纲比对；Agent1 重新生成或人工修改提纲后，旧清单不能继续生效。阈值使用保守默认值（必答、至少 1 条合格证据、不限来源等级与数值），系统不去猜哪个问题"应该"是数值型的——猜错会造成无法通过的门禁；需要收紧时人工编辑该文件。
+
+落地内容：
+
+- 新增 `research_plan.py`：`ResearchQuestion` / `ResearchPlan`（pydantic，带 `schema_version`、非空 `question_id`、重复 ID 校验）、`derive_plan_from_outline()`、`rebuild_plan()`、`require_plan()`、`known_question_ids()`、`plan_prompt_context()`
+- 提纲必须包含可解析的《核心研究问题》有序列表；缺失或格式不符合约定时直接阻断并要求 Agent1 重做，不用章节标题或通用问题伪造必答问题全集
+- `source_outline` 是必填摘要；需求清单读取和证据记录工具都会校验当前提纲，提纲发生变化后旧清单立即失效
+- `ResearchRequirement` 增加 `text` 字段，门禁原因直接写出用户认得的问题文本，不用去翻 JSON
+- `QualityGate.evaluate()` 两处补强：需求集合为空视为"缺少研究计划"直接 BLOCKED（否则空集合会让任何项目平凡通过）；证据引用清单外 `question_id` 时写入 reasons，不再从覆盖率里静默消失
+- 所有 Agent 的 prompt 注入同一张需求表；`RecordProjectEvidence` 校验 `research_question_id` 必须在清单内，表外 ID 返回结构化错误并附 `known_question_ids` 供模型自纠。`project_id` 来自模型输出，解析目录时校验不能用 `..` 逃出 `PROJECTS_DIR`
+- `_deterministic_convergence()` 与 `_assert_delivery_ready()` 改为读取固定清单；删除全部"从 supported 证据反推要求"的代码路径，并加了一条断言测试（用 `inspect.getsource` 检查这三个函数体内不再出现 `research_question_id`），防止后续改动把反推逻辑写回来
+- 新增 `SQLiteRepository.delete_evidence()`——测试"删除某个问题的全部证据后交付被阻断"需要真删数据，而不是改状态字段绕过
+- 工作台新增研究需求清单面板（question_id / 问题 / 必答 / 阈值 / 实时覆盖率），以及缺清单时的迁移面板
+
+旧项目兼容：唯一路径是显式迁移。`ResearchPlanBlockedError` 与"证据不足"分开——后者靠补采解决，前者必须先重新确认研究计划，所以 `recover_blocked_delivery()` 和 `retry_blocked_reason()` 都拒绝在缺清单时回退或重试，改为要求先执行 `python -m research_agent migrate-plan <项目目录>`（或工作台点按钮）。迁移只固定问题，不补造证据；如果项目已经存在与当前提纲匹配的有效清单，CLI 和 Web 都拒绝覆盖，保留人工设置的门槛和稳定问题 ID。`_outline_path()` 优先项目目录内的标准文件名而非 `state.json` 里的绝对路径——项目目录被复制后旧路径仍存在，据此重建的清单会属于错误的项目。
+
+验证：`tests/test_research_requirements.py` 包含 28 项 R1 回归测试，另在 Agent、工具和 Web 既有测试中补充集成覆盖。除零证据、部分覆盖、阈值、未知 ID 和显式迁移外，还验证了提纲漂移必然阻断，以及 CLI/Web 不会覆盖有效清单。用 `projects/Minimax未来股价走势_20260719_130327` 的副本实测迁移：`status` 正确提示缺清单，`migrate-plan` 从真实提纲派生出 7 个研究问题。全量 250 项测试通过。
+
+已知限制：派生的 `min_source_tier` 与 `require_numeric` 一律取宽松默认值，"数值型问题必须有数值证据"这条门禁要靠人工编辑清单才会生效；`min_supported` 恒为 1，多源交叉印证的强度仍由 `QualityGate` 原有的独立来源规则兜底。
+
+---
 
 ### Token 用量统计与首页展示（2026-07-28，对应第 5 项）
 

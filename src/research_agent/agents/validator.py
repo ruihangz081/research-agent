@@ -14,6 +14,7 @@ from rich.console import Console
 from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
+from ..research_plan import plan_prompt_context
 from ..tools import default_registry
 from .source_context import source_context
 
@@ -108,6 +109,7 @@ async def run_validation(
     )
 
     system_prompt = _load_validator_prompt()
+    system_prompt += plan_prompt_context(state)
     system_prompt += source_context(state)
     replacements = {
         "{outline_path}": str(Path(state.outline_path)),
@@ -130,6 +132,7 @@ async def run_validation(
         f"- 反馈 JSON 写入：`{feedback_path}`\n"
         f"- 验证报告写入（累加）：`{validation_report_path}`\n"
         f"- 本轮 raw：`{raw_round_path}`\n"
+        f"- 研究需求清单：`{state.project_dir / config.FILE_RESEARCH_REQUIREMENTS}`\n"
     )
 
     options = AgentOptions(

@@ -14,6 +14,7 @@ from rich.console import Console
 from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
+from ..research_plan import plan_prompt_context
 from ..tools import default_registry
 from .source_context import source_context
 
@@ -74,6 +75,7 @@ async def run_source_tiering(
     sources_draft_path = state.project_dir / config.FILE_SOURCES_DRAFT
 
     system_prompt = _load_tiering_prompt()
+    system_prompt += plan_prompt_context(state)
     system_prompt += source_context(state)
     system_prompt = system_prompt.replace("{outline_path}", str(outline_path))
     system_prompt = system_prompt.replace("{sources_draft_path}", str(sources_draft_path))
@@ -166,6 +168,7 @@ async def run_collection_round(
     }
     for k, v in replacements.items():
         system_prompt = system_prompt.replace(k, v)
+    system_prompt += plan_prompt_context(state)
 
     system_prompt += (
         f"\n\n## 当前项目参数\n"
@@ -176,6 +179,7 @@ async def run_collection_round(
         f"- 历史轮次文件：\n{previous_rounds_str}\n"
         f"- Agent3 反馈 JSON：`{feedback_path}`\n"
         f"- 本轮输出路径：`{round_output}`\n"
+        f"- 研究需求清单：`{state.project_dir / config.FILE_RESEARCH_REQUIREMENTS}`\n"
     )
 
     options = AgentOptions(

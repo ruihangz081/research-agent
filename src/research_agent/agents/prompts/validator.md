@@ -34,14 +34,16 @@
 - **低质源**（缺失作者/日期、明显二手转述、数据不一致）→ 列入 `drop_sources`
 
 ### 4. 覆盖缺口
-- 对照《提纲》的每个研究问题，当前已覆盖到什么程度？
-- 未达到最低数据覆盖要求的 → 列入 `gap_list`
+- 对照**固定研究需求清单**（system prompt 中的表格，来自 `research_requirements.json`）逐个 `question_id` 检查覆盖情况
+- 每条 EvidenceRecord 的 `research_question_id` **必须**取自该表；工具会拒绝表外的 ID，不要自造
+- 必答问题尚未达到最低证据数/最低来源等级/数值要求的 → 列入 `gap_list`，并在 `next_round_focus` 指明要补哪个 `question_id`
 
 ### 5. 收敛判断
-- 所有核心问题已被 S/A 级源至少覆盖一次 → 可收敛
+- 需求清单中**每个必答 question_id** 都已达到其最低证据要求 → 可收敛
 - 冲突均已解释 → 可收敛
 - 无重大 gap → 可收敛
 - 以上全满足 → `converged: true`；否则 `false`
+- 注意：即使你声明 `converged: true`，确定性质量门仍会按需求清单独立复核；必答问题缺证据时不会放行
 
 ## 输出 A：反馈 JSON（严格 schema）
 
@@ -125,6 +127,7 @@
 ## 重要规则
 
 - `source_id` 和 `chunk_id` 是两种不同的 ID，禁止把 `src_...` 形式的 `source_id` 传入 `chunk_id`
+- `RecordProjectEvidence` 的 `research_question_id` 必须是研究需求清单里已存在的 `question_id`；传入表外 ID 会被工具拒绝并返回 `known_question_ids`
 - 对每个准备保留的事实，先调用 `SearchProjectSources` 获取成对返回的 `source_id`、`source_version`、`chunk_id`；如果只知道 `source_id`，先调用 `ListProjectSourceChunks` 获取真实 `chunk_id`
 - 必须再用 `ReadProjectSource` 回查原文，且仅当返回 `ok=true` 时调用 `RecordProjectEvidence`
 - `excerpt` 必须逐字复制 `ReadProjectSource.text` 中的连续原文，`locator_json` 必须原样使用同一次读取结果中的一个 locator，禁止自行改写

@@ -147,7 +147,13 @@ def test_cli_retry_rejects_project_without_failure(projects_dir: Path) -> None:
 class _RecordingHost:
     """测试宿主：记录阶段日志，检查点按预设脚本处置。"""
 
-    def __init__(self, decisions=None, outline_body: str = "# outline") -> None:
+    def __init__(
+        self,
+        decisions=None,
+        outline_body: str = (
+            "# 调研提纲\n\n## 二、核心研究问题\n1. 市场规模是多少？\n"
+        ),
+    ) -> None:
         self.decisions = list(decisions or [])
         self.outline_body = outline_body
         self.logs: list[str] = []

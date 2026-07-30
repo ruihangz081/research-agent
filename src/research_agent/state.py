@@ -66,6 +66,9 @@ class ProjectState(BaseModel):
     # Agent1 产出（供后续 agent 读取）
     outline_path: str | None = None
 
+    # R1：研究开始阶段固定下来的需求清单（research_requirements.json）
+    research_plan_path: str | None = None
+
     # Agent1 需求澄清对话（Web 交互模式；CLI 在 AgentSession 内部完成对话）
     clarification: list[dict[str, str]] = Field(default_factory=list)
 
