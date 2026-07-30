@@ -21,6 +21,7 @@ from research_agent.orchestrator import (
 from research_agent.sources import LocalObjectStore, SQLiteRepository, SourceService
 from research_agent.sources.enums import VerificationStatus
 from research_agent.sources.models import EvidenceRecord
+from research_agent.sources.runtime import reset_runtime
 from research_agent.state import ProjectState, Stage
 from research_agent.tools.builtins import project_sources
 
@@ -28,7 +29,7 @@ from research_agent.tools.builtins import project_sources
 def prepared_state(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
     monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
-    project_sources._service.cache_clear()
+    reset_runtime()
     state = ProjectState(topic="evidence", date_str="20260717")
     state.project_dir.mkdir(parents=True)
     state.save()

@@ -1,10 +1,10 @@
 Lumitrace.mountShell("workspace");
 
-const state = { projects: [], projectId: Lumitrace.selectedProject(), project: null, artifactKey: null, renderedArtifactKey: null, renderedArtifactMarkup: null, poll: null };
+const state = { projects: [], projectId: Lumitrace.selectedProject(), project: null, artifactKey: null, renderedArtifactKey: null, renderedArtifactMarkup: null, poll: null, busy: false };
 const $ = (id) => document.getElementById(id);
 const pipelineStages = [
   ["初始化", ["init"]],
-  ["战略规划", ["planning", "await_outline_approval"]],
+  ["战略规划", ["planning", "await_clarification", "await_outline_approval"]],
   ["信息源分层", ["sourcing", "await_source_approval"]],
   ["采集验证", ["collecting_and_validating", "await_final_source_approval"]],
   ["深度分析", ["analyzing"]],
@@ -37,6 +37,23 @@ function renderTimeline(project) {
   $("logList").innerHTML = (project.logs || []).slice().reverse().map((log) => `<div class="log-row"><time>${Lumitrace.escapeHtml(log.time)}</time><span>${Lumitrace.escapeHtml(log.message)}</span></div>`).join("");
 }
 
+function renderClarification(project) {
+  const panel = $("clarifyPanel");
+  const questions = project.clarification_questions || [];
+  const pending = project.stage === "await_clarification" && questions.length > 0;
+  panel.classList.toggle("hidden", !pending);
+  if (!pending) return;
+  $("clarifyQuestions").innerHTML = questions.map((question, index) => `
+    <label class="clarify-item">
+      <span>${index + 1}. ${Lumitrace.escapeHtml(question)}</span>
+      <textarea data-clarify="${index}" rows="2" maxlength="500" placeholder="留空则采用 Agent1 的建议默认值"></textarea>
+    </label>`).join("");
+  const history = project.clarification || [];
+  $("clarifyHistory").innerHTML = history.length
+    ? `<details style="margin-top:14px"><summary class="muted" style="cursor:pointer;font-weight:700">历史澄清问答（${history.length}）</summary><div class="clarify-history">${history.map((item) => `<div><strong>${Lumitrace.escapeHtml(item.question)}</strong><p>${Lumitrace.escapeHtml(item.answer)}</p></div>`).join("")}</div></details>`
+    : "";
+}
+
 function renderCheckpoint(project) {
   const panel = $("checkpointPanel");
   panel.classList.toggle("hidden", !project.checkpoint);
@@ -44,6 +61,27 @@ function renderCheckpoint(project) {
   $("checkpointTitle").textContent = `${project.checkpoint.title}审批`;
   $("checkpointName").textContent = project.checkpoint.title;
   if (!state.artifactKey) state.artifactKey = project.checkpoint.key;
+}
+
+function renderFailure(project) {
+  const panel = $("failurePanel");
+  const failed = Boolean(project.failed) && !project.running;
+  panel.classList.toggle("hidden", !failed);
+  $("retryBtn").classList.toggle("hidden", !project.can_retry);
+  $("retryBtn").disabled = !project.can_retry;
+  if (!failed) return;
+  $("failureStage").textContent = Lumitrace.stageLabel(project.failed_stage || project.stage);
+  $("failureError").textContent = project.last_error || project.job_message || "未知错误";
+  const reasons = project.quality_gate_reasons || [];
+  // 门禁"通过但有限制"时，这些是留存的已知局限，不是阻断原因；标成"未通过"会误导排查方向
+  const blocked = project.quality_gate === "blocked" || project.quality_gate === "needs_more_research";
+  const reasonsTitle = blocked ? "证据门槛未通过原因" : "证据门槛已通过，但存在以下局限（非本次失败原因）";
+  $("failureReasons").innerHTML = reasons.length
+    ? `<p class="eyebrow" style="margin-top:14px">${reasonsTitle}</p><ul class="failure-reasons">${reasons.map((item) => `<li>${Lumitrace.escapeHtml(item)}</li>`).join("")}</ul>`
+    : "";
+  $("retryMeta").textContent = project.retry_blocked_reason || (project.retry_count ? `已重试 ${project.retry_count} 次` : "重试会保留已生成的产物");
+  $("failureRetryBtn").disabled = !project.can_retry;
+  $("failureRetryBtn").title = project.retry_blocked_reason || "";
 }
 
 function previewableArtifacts(project) {
@@ -111,18 +149,23 @@ function renderProject(project) {
   $("projectTitle").textContent = project.topic;
   $("stageText").textContent = Lumitrace.stageLabel(project.stage);
   const tone = Lumitrace.stageTone(project);
-  const runLabel = project.running ? "运行中" : project.job_status === "error" ? "运行失败" : project.checkpoint ? "等待审批" : project.stage === "done" ? "已完成" : "已暂停";
+  const runLabel = project.running ? "运行中" : project.failed ? "运行失败" : project.stage === "await_clarification" ? "等待澄清" : project.checkpoint ? "等待审批" : project.stage === "done" ? "已完成" : "已暂停";
   $("runText").innerHTML = `<i class="status-dot ${tone}"></i> ${runLabel}`;
-  $("continueBtn").disabled = project.running || project.stage === "done" || Boolean(project.checkpoint);
+  $("continueBtn").disabled = project.running || project.stage === "done" || Boolean(project.checkpoint) || Boolean(project.can_retry) || project.stage === "await_clarification";
+  $("continueBtn").title = project.can_retry ? "项目处于失败状态，请先点击重试" : project.stage === "await_clarification" ? "请先回答澄清问题" : "";
+  $("deleteBtn").disabled = project.running;
   $("roundBadge").textContent = `第 ${project.collect_round} / ${project.max_collect_rounds} 轮`;
   renderPipeline(project);
   renderTimeline(project);
+  renderClarification(project);
   renderCheckpoint(project);
+  renderFailure(project);
   renderArtifacts(project);
   updateDownloads(project);
 }
 
 async function loadProject() {
+  if (state.busy) return;
   if (!state.projectId) {
     try {
       const data = await Lumitrace.api("/api/projects");
@@ -177,7 +220,71 @@ async function typeset() {
   finally { Lumitrace.setButtonBusy(button, false); }
 }
 
+async function retryProject(button) {
+  state.busy = true;
+  Lumitrace.setButtonBusy(button, true, "重试中");
+  try {
+    const result = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/retry`, { method: "POST", body: JSON.stringify({ extra_rounds: 1 }) });
+    Lumitrace.toast(result.message || "已重新开始运行");
+  } catch (error) { Lumitrace.toast(error.message, "danger"); }
+  finally {
+    Lumitrace.setButtonBusy(button, false);
+    state.busy = false;
+    await loadProject();
+  }
+}
+
+async function deleteProject(button) {
+  state.busy = true;
+  const confirmed = await Lumitrace.confirmAction({
+    title: "删除项目",
+    message: `将永久删除「${state.project?.topic || state.projectId}」及其全部产物，操作不可恢复。`,
+    confirmLabel: "永久删除",
+  });
+  if (!confirmed) { state.busy = false; return; }
+  Lumitrace.setButtonBusy(button, true, "删除中");
+  try {
+    await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}`, { method: "DELETE" });
+    window.clearInterval(state.poll);
+    localStorage.removeItem("lumitrace.project");
+    Lumitrace.toast("项目已删除", "warning");
+    window.location.href = "/research";
+  } catch (error) {
+    Lumitrace.toast(error.message, "danger");
+    Lumitrace.setButtonBusy(button, false);
+    state.busy = false;
+    await loadProject();
+  }
+}
+
+async function submitClarification(skip) {
+  const button = skip ? $("clarifySkipBtn") : $("clarifySubmitBtn");
+  const answers = Array.from(
+    $("clarifyQuestions").querySelectorAll("[data-clarify]")
+  ).map((item) => item.value);
+  state.busy = true;
+  Lumitrace.setButtonBusy(button, true, "提交中");
+  try {
+    await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/clarification`, {
+      method: "POST",
+      body: JSON.stringify({ answers, skip }),
+    });
+    Lumitrace.toast(skip ? "已跳过，Agent1 将使用默认值" : "回答已提交，Agent1 继续起草提纲");
+  } catch (error) { Lumitrace.toast(error.message, "danger"); }
+  finally {
+    Lumitrace.setButtonBusy(button, false);
+    state.busy = false;
+    await loadProject();
+  }
+}
+
 $("continueBtn").addEventListener("click", continueProject);
+$("clarifySubmitBtn").addEventListener("click", () => submitClarification(false));
+$("clarifySkipBtn").addEventListener("click", () => submitClarification(true));
+$("retryBtn").addEventListener("click", () => retryProject($("retryBtn")));
+$("failureRetryBtn").addEventListener("click", () => retryProject($("failureRetryBtn")));
+$("deleteBtn").addEventListener("click", () => deleteProject($("deleteBtn")));
+$("failureDeleteBtn").addEventListener("click", () => deleteProject($("failureDeleteBtn")));
 $("approveBtn").addEventListener("click", () => approve(true));
 $("rejectBtn").addEventListener("click", () => approve(false));
 $("downloadPdfBtn").addEventListener("click", () => openDownload("/download/final-report.pdf"));

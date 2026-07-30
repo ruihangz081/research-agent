@@ -35,8 +35,15 @@
 \renewcommand{\headrule}{\hbox to\headwidth{\color{BrokerGrid}\leaders\hrule height \headrulewidth\hfill}}
 \renewcommand{\arraystretch}{1.25}
 \setlength{\tabcolsep}{3.5pt}
-\setlength{\emergencystretch}{2em}
-\AtBeginEnvironment{longtable}{\small\sloppy}
+\setlength{\emergencystretch}{3em}
+% Narrow research tables hold domains, ids and locators with no natural break
+% points. Allowing hyphenation-free relaxation inside them keeps content on the
+% page instead of producing Overfull \hbox that blocks delivery.
+\AtBeginEnvironment{longtable}{%
+  \small\sloppy
+  \setlength{\emergencystretch}{4em}%
+  \relpenalty=9999 \binoppenalty=9999
+}
 \makeatletter
 \newcommand{\BrokerNeedSpace}[1]{%
   \begingroup\setlength{\dimen@}{#1}%

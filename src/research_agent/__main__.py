@@ -8,12 +8,19 @@
     # 断点续跑（传入项目目录路径）
     python -m research_agent resume projects/新能源汽车行业_20260423
 
+    # 重试失败的项目（保留既有产物，仅复位失败阶段）
+    python -m research_agent retry projects/新能源汽车行业_20260423
+
+    # 删除项目及其全部产物
+    python -m research_agent delete projects/新能源汽车行业_20260423 -y
+
     # 查看当前状态
     python -m research_agent status projects/新能源汽车行业_20260423
 """
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -80,6 +87,66 @@ def _cmd_resume(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_retry(args: argparse.Namespace) -> int:
+    project_dir = Path(args.project_dir).resolve()
+    if not project_dir.exists():
+        console.print(f"[red]项目目录不存在：{project_dir}[/red]")
+        return 2
+
+    try:
+        state = ProjectState.load(project_dir)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        return 2
+
+    if not orchestrator.can_retry(state):
+        console.print(
+            "[yellow]该项目没有失败记录；如需继续推进请使用 resume。[/yellow]"
+        )
+        return 2
+
+    blocked = orchestrator.retry_blocked_reason(state)
+    if blocked:
+        console.print(f"[yellow]{blocked}[/yellow]")
+        return 2
+
+    message = orchestrator.prepare_retry(state, extra_rounds=args.extra_rounds)
+    console.print(
+        f"\n[bold cyan]↻ 重试调研项目（第 {state.retry_count} 次）[/bold cyan]\n"
+        f"[dim]主题：{state.topic}[/dim]\n"
+        f"[dim]{message}[/dim]\n"
+    )
+
+    anyio.run(orchestrator.run_pipeline, state)
+    return 0
+
+
+def _cmd_delete(args: argparse.Namespace) -> int:
+    project_dir = Path(args.project_dir).resolve()
+    if not project_dir.exists():
+        console.print(f"[red]项目目录不存在：{project_dir}[/red]")
+        return 2
+
+    root = config.PROJECTS_DIR.resolve()
+    if root not in project_dir.parents:
+        console.print(f"[red]只能删除 {root} 下的项目目录[/red]")
+        return 2
+    if not (project_dir / config.FILE_STATE).exists():
+        console.print(f"[red]不是有效的项目目录（缺少 {config.FILE_STATE}）[/red]")
+        return 2
+
+    if not args.yes:
+        console.print(
+            f"[yellow]将永久删除项目目录及其全部产物：{project_dir}[/yellow]\n"
+            f"[dim]此操作不可恢复。确认请重新执行并加上 -y。[/dim]"
+        )
+        return 1
+
+    shutil.rmtree(project_dir)
+    console.print(f"[green]✓ 项目已删除：{project_dir}[/green]")
+    return 0
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     project_dir = Path(args.project_dir).resolve()
     try:
@@ -100,6 +167,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
         f"  分析：{state.analysis_path or '—'}\n"
         f"  终稿：{state.final_report_path or '—'}\n"
     )
+    if state.failed_stage or state.last_error:
+        console.print(
+            f"[red]  失败阶段：{state.failed_stage or state.stage.value}[/red]\n"
+            f"[dim]  失败原因：{state.last_error or '—'}[/dim]\n"
+            f"[yellow]  可运行：python -m research_agent retry {project_dir}[/yellow]\n"
+        )
+    if state.retry_count:
+        console.print(f"[dim]  已重试次数：{state.retry_count}[/dim]\n")
     return 0
 
 
@@ -118,6 +193,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_resume = sub.add_parser("resume", help="对现有项目断点续跑")
     p_resume.add_argument("project_dir", type=str, help="项目目录路径")
     p_resume.set_defaults(func=_cmd_resume)
+
+    p_retry = sub.add_parser("retry", help="重试失败的项目（保留既有产物）")
+    p_retry.add_argument("project_dir", type=str, help="项目目录路径")
+    p_retry.add_argument(
+        "--extra-rounds",
+        type=int,
+        default=1,
+        help="审查未通过时追加的采集验证轮次预算（默认 1）",
+    )
+    p_retry.set_defaults(func=_cmd_retry)
+
+    p_delete = sub.add_parser("delete", help="删除项目目录及其全部产物")
+    p_delete.add_argument("project_dir", type=str, help="项目目录路径")
+    p_delete.add_argument("-y", "--yes", action="store_true", help="跳过确认")
+    p_delete.set_defaults(func=_cmd_delete)
 
     p_status = sub.add_parser("status", help="查看项目当前状态")
     p_status.add_argument("project_dir", type=str, help="项目目录路径")

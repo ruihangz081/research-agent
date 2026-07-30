@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>项目工作区 · 溯光 Lumitrace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260720-markdown" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260728-layout" />
   </head>
   <body>
     <div class="app-shell">
@@ -18,12 +18,28 @@
           <div class="topbar-meta">
             <span class="topbar-stat"><small>当前阶段</small><strong id="stageText">未选择</strong></span>
             <span class="topbar-stat"><small>运行状态</small><strong id="runText"><i class="status-dot neutral"></i> 等待选择</strong></span>
+            <button id="retryBtn" class="button secondary hidden" type="button">↻ 重试当前阶段</button>
             <button id="continueBtn" class="button primary" type="button" disabled>▶ 继续运行</button>
+            <button id="deleteBtn" class="button danger" type="button" disabled>删除项目</button>
           </div>
         </header>
 
         <div class="page-content">
           <section id="pipeline" class="pipeline" aria-label="研究进度"></section>
+          <section id="failurePanel" class="panel failure-panel hidden">
+            <div class="panel-header"><h2>运行失败</h2><span class="status-pill danger"><i class="status-dot danger"></i>需要处理</span></div>
+            <div class="panel-body">
+              <p class="eyebrow">失败阶段</p>
+              <h3 id="failureStage" style="margin:0 0 10px">—</h3>
+              <pre id="failureError" class="failure-error"></pre>
+              <div id="failureReasons"></div>
+              <div class="failure-actions">
+                <button id="failureRetryBtn" class="button primary" type="button">↻ 重试并继续</button>
+                <button id="failureDeleteBtn" class="button danger" type="button">删除项目</button>
+                <span id="retryMeta" class="muted"></span>
+              </div>
+            </div>
+          </section>
           <div id="workspaceEmpty" class="panel empty"><span class="empty-symbol">◇</span><strong>选择一个研究项目</strong><p>从研究首页打开项目，查看 Agent 执行进度与产物。</p><a class="button primary" href="/research">前往研究首页</a></div>
 
           <div id="workspaceContent" class="workspace-grid hidden">
@@ -37,6 +53,16 @@
                     <div id="logList" class="log-box" style="margin-top:10px"></div>
                   </details>
                 </div>
+              </section>
+
+              <section id="clarifyPanel" class="panel checkpoint hidden">
+                <div class="panel-header"><h2>Agent1 需求澄清</h2><span class="status-pill warning">待回答</span></div>
+                <div class="panel-body">
+                  <p class="muted" style="margin-top:0">回答这些问题能让调研方向更贴合你的意图。留空的问题 Agent1 会使用建议默认值。</p>
+                  <div id="clarifyQuestions" class="clarify-list"></div>
+                  <div id="clarifyHistory"></div>
+                </div>
+                <div class="checkpoint-actions" style="padding:0 18px 18px"><button id="clarifySkipBtn" class="button secondary" type="button">全部用默认值</button><button id="clarifySubmitBtn" class="button primary" type="button">提交回答并继续</button></div>
               </section>
 
               <section id="checkpointPanel" class="panel checkpoint hidden">
@@ -65,7 +91,7 @@
         </div>
       </main>
     </div>
-    <script src="/static/ui.js?v=20260720-markdown"></script>
-    <script src="/static/app.js?v=20260720-markdown"></script>
+    <script src="/static/ui.js?v=20260728-layout"></script>
+    <script src="/static/app.js?v=20260728-layout"></script>
   </body>
 </html>

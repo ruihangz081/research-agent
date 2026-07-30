@@ -48,6 +48,22 @@ class ToolRegistry:
         self._handlers[name] = handler
         self._schemas[name] = schema
 
+    def subset(self, names: list[str]) -> "ToolRegistry":
+        """派生一个只含指定工具的新注册表。
+
+        用于给单次 agent 调用挂载临时工具（例如向用户提问），而不污染全局注册表。
+        未找到的名字会被跳过并记录告警，与 `get_schemas` 行为一致。
+        """
+        derived = ToolRegistry()
+        for name in names:
+            handler = self._handlers.get(name)
+            schema = self._schemas.get(name)
+            if handler is None or schema is None:
+                logger.warning("Tool '%s' not found in registry, skipping", name)
+                continue
+            derived.register(name, handler, schema)
+        return derived
+
     def get_schemas(
         self, tool_names: list[str] | None = None
     ) -> list[ToolDefinition]:

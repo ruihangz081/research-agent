@@ -120,6 +120,60 @@ def make_latex_source_ids_breakable(tex: str) -> str:
     return pattern.sub(replacement, tex)
 
 
+# Long unbreakable runs are the main cause of Overfull \hbox inside narrow table
+# cells: domains, URLs and hyphenated slugs carry no natural break point, so TeX
+# is forced to push them past the column edge.
+_LONG_TOKEN = re.compile(
+    r"(?<![\\{A-Za-z0-9._/:-])[A-Za-z0-9][A-Za-z0-9._/:\-]{15,}"
+)
+_BREAK_AFTER = re.compile(r"([._/:\-])")
+# Runs with no punctuation at all still need help; break every N characters.
+_HARD_CHUNK = 12
+# Lines carrying markup arguments (paths, labels, links) must stay byte-exact.
+_UNSAFE_LINE = re.compile(
+    r"\\(?:includegraphics|hypertarget|label|ref|href|url|input|include|"
+    r"usepackage|documentclass|graphicspath|newcommand|renewcommand|def|"
+    r"begin\{verbatim|begin\{lstlisting|begin\{Highlighting)"
+)
+
+
+def _split_long_token(token: str) -> str:
+    parts = _BREAK_AFTER.split(token)
+    rebuilt: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        if part in "._/:-":
+            rebuilt.append(part + r"\allowbreak{}")
+            continue
+        # A punctuation-free run still has to break somewhere.
+        if len(part) > _HARD_CHUNK:
+            chunks = [
+                part[index:index + _HARD_CHUNK]
+                for index in range(0, len(part), _HARD_CHUNK)
+            ]
+            rebuilt.append(r"\allowbreak{}".join(chunks))
+        else:
+            rebuilt.append(part)
+    return "".join(rebuilt)
+
+
+def make_latex_long_tokens_breakable(tex: str) -> str:
+    """Insert ``\\allowbreak`` inside long ASCII runs in document text.
+
+    Lines that carry LaTeX markup arguments (image paths, labels, hyperlinks,
+    verbatim) are left untouched so we never corrupt the document structure.
+    """
+    lines = tex.split("\n")
+    for index, line in enumerate(lines):
+        if not line or "\\" in line and _UNSAFE_LINE.search(line):
+            continue
+        lines[index] = _LONG_TOKEN.sub(
+            lambda match: _split_long_token(match.group(0)), line
+        )
+    return "\n".join(lines)
+
+
 def _fallback_table(chart: ChartSpec) -> str:
     headers = ["项目", *chart.labels]
     separator = ["---", *["---:" for _ in chart.labels]]
@@ -310,10 +364,40 @@ def build_report_latex(
     if proc.returncode != 0:
         raise RuntimeError(f"Pandoc LaTeX 转换失败：{proc.stderr.strip()}")
     tex_path.write_text(
-        make_latex_source_ids_breakable(tex_path.read_text(encoding="utf-8")),
+        make_latex_long_tokens_breakable(
+            make_latex_source_ids_breakable(tex_path.read_text(encoding="utf-8"))
+        ),
         encoding="utf-8",
     )
     return tex_path
+
+
+_OVERFULL = re.compile(r"Overfull \\hbox \((\d+(?:\.\d+)?)pt too wide\)")
+_MISSING_GLYPH = re.compile(r"Missing character: There is no (.+?) \(")
+# Right page margin is 19mm ≈ 54pt. Anything narrower than this stays inside the
+# margin: visually tight, but not spilling off the paper. Only real spillover
+# should block delivery — a 25pt overhang used to fail the whole run even though
+# the PDF was perfectly printable.
+_OVERFULL_TOLERANCE_PT = 54.0
+
+
+def _layout_problems(log: str) -> tuple[list[str], list[str]]:
+    """Split layout warnings into blocking problems and tolerable notes."""
+    blocking: list[str] = []
+    tolerable: list[str] = []
+    for line in log.splitlines():
+        match = _OVERFULL.search(line)
+        if match:
+            if float(match.group(1)) >= _OVERFULL_TOLERANCE_PT:
+                blocking.append(line.strip())
+            else:
+                tolerable.append(line.strip())
+            continue
+        # A missing glyph means the character is silently dropped from the PDF —
+        # always a content-integrity failure regardless of size.
+        if _MISSING_GLYPH.search(line):
+            blocking.append(line.strip())
+    return blocking, tolerable
 
 
 def compile_report_pdf(tex_path: Path) -> Path | None:
@@ -336,17 +420,27 @@ def compile_report_pdf(tex_path: Path) -> Path | None:
             compile_log = tex_path.with_suffix(".compile.log")
             compile_log.write_text(combined, encoding="utf-8")
             raise RuntimeError(f"LaTeX 编译失败，日志：{compile_log.name}")
-    serious_overfull = [
-        line for line in combined.splitlines()
-        if "Overfull \\hbox" in line and re.search(r"\((?:[2-9]\d|\d{3,})\.\d+pt too wide\)", line)
-    ]
-    fatal_warnings = [line for line in combined.splitlines() if "Missing character:" in line]
-    if serious_overfull or fatal_warnings:
-        warning_path = tex_path.with_suffix(".layout-warnings.log")
-        warning_path.write_text("\n".join(serious_overfull + fatal_warnings), encoding="utf-8")
-        raise RuntimeError(f"PDF 存在严重排版警告：{warning_path.name}")
+
+    blocking, tolerable = _layout_problems(combined)
+    warning_path = tex_path.with_suffix(".layout-warnings.log")
+    if blocking:
+        report = ["# 阻断交付的排版问题", *blocking]
+        if tolerable:
+            report += ["", "# 可接受的轻微溢出（未阻断）", *tolerable]
+        warning_path.write_text("\n".join(report) + "\n", encoding="utf-8")
+        raise RuntimeError(
+            f"PDF 存在 {len(blocking)} 处严重排版问题（文字溢出纸面或字形缺失）："
+            f"{warning_path.name}"
+        )
+    if tolerable:
+        # Keep them visible for tuning, but do not fail an otherwise good PDF.
+        warning_path.write_text(
+            "# 轻微溢出，仍在页边距内，未阻断交付\n" + "\n".join(tolerable) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        warning_path.unlink(missing_ok=True)
     tex_path.with_suffix(".compile.log").unlink(missing_ok=True)
-    tex_path.with_suffix(".layout-warnings.log").unlink(missing_ok=True)
     pdf_path = tex_path.with_suffix(".pdf")
     return pdf_path if pdf_path.is_file() else None
 

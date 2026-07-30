@@ -2,6 +2,7 @@ const Lumitrace = (() => {
   const stageLabels = {
     init: "初始化",
     planning: "战略规划",
+    await_clarification: "等待需求澄清",
     await_outline_approval: "等待提纲审批",
     sourcing: "信息源分层",
     await_source_approval: "等待源草案审批",
@@ -44,6 +45,7 @@ const Lumitrace = (() => {
     download: '<path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 20h16"/>',
     more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
     refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>',
+    trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/>',
     close: '<path d="m6 6 12 12M18 6 6 18"/>',
   };
 
@@ -279,8 +281,8 @@ const Lumitrace = (() => {
 
   function stageTone(project) {
     if (project.running) return "running";
+    if (project.failed || project.job_status === "error") return "danger";
     if (project.stage === "done") return "success";
-    if (project.job_status === "error") return "danger";
     if (String(project.stage).startsWith("await_")) return "warning";
     return "neutral";
   }
@@ -326,8 +328,37 @@ const Lumitrace = (() => {
     }
   }
 
+  function confirmAction({ title, message, confirmLabel = "确认", tone = "danger" }) {
+    return new Promise((resolve) => {
+      const backdrop = document.createElement("div");
+      backdrop.className = "drawer-backdrop confirm-backdrop open";
+      backdrop.innerHTML = `
+        <div class="confirm-dialog" role="dialog" aria-modal="true">
+          <h2>${escapeHtml(title)}</h2>
+          <p>${escapeHtml(message)}</p>
+          <div class="confirm-actions">
+            <button class="button secondary" type="button" data-confirm="no">取消</button>
+            <button class="button ${tone}" type="button" data-confirm="yes">${escapeHtml(confirmLabel)}</button>
+          </div>
+        </div>`;
+      const finish = (value) => { backdrop.remove(); resolve(value); };
+      backdrop.addEventListener("click", (event) => {
+        if (event.target === backdrop) finish(false);
+        const button = event.target.closest("[data-confirm]");
+        if (button) finish(button.dataset.confirm === "yes");
+      });
+      document.addEventListener("keydown", function onKey(event) {
+        if (!document.body.contains(backdrop)) { document.removeEventListener("keydown", onKey); return; }
+        if (event.key === "Escape") { document.removeEventListener("keydown", onKey); finish(false); }
+      });
+      document.body.appendChild(backdrop);
+      backdrop.querySelector('[data-confirm="yes"]').focus();
+    });
+  }
+
   return {
     api,
+    confirmAction,
     escapeHtml,
     formatDate,
     icon,

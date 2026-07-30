@@ -13,11 +13,10 @@ from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, File, Header, 
 from pydantic import BaseModel, Field
 
 from .jobs import JobQueue, SourceWorker
-from .repository import SQLiteRepository
+from .runtime import get_runtime
 from .search import SearchFilters
 from .quality import ResearchRequirement
 from .service import SourceService
-from .storage import LocalObjectStore
 from .observability import metrics
 
 
@@ -61,10 +60,12 @@ class SearchRequest(BaseModel):
 
 
 def build_runtime(data_dir: str | Path) -> tuple[SourceService, JobQueue]:
-    root = Path(data_dir)
-    repository = SQLiteRepository(root / "catalog.sqlite3")
-    service = SourceService(repository, LocalObjectStore(root / "objects"))
-    return service, JobQueue(repository)
+    """取该数据目录的共享运行时（进程内复用同一条 SQLite 连接）。
+
+    历史上这里每次调用都新建连接，调用方各自决定是否 close()。现在统一由
+    `sources.runtime` 缓存，调用方不再负责关闭。
+    """
+    return get_runtime(data_dir)
 
 
 def create_sources_router(service: SourceService, queue: JobQueue, *, process_in_background: bool = False) -> APIRouter:
