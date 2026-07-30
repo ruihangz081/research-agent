@@ -167,6 +167,10 @@ class LLMClient:
             "temperature": temperature,
             "stream": stream,
         }
+        if stream:
+            # 请求流式响应也返回 usage（OpenAI 兼容扩展）。不支持该字段的服务
+            # 会忽略它，此时 token 统计只是缺失，不影响调用本身。
+            body["stream_options"] = {"include_usage": True}
         if max_tokens:
             body["max_tokens"] = max_tokens
         if tools:
@@ -265,11 +269,14 @@ class LLMClient:
         except json.JSONDecodeError:
             return None
 
-        choice = (data.get("choices") or [{}])[0]
+        # include_usage 的最后一个 chunk 通常 choices 为空、只带 usage
+        choices = data.get("choices") or []
+        choice = choices[0] if choices else {}
         delta = choice.get("delta", {})
 
         return StreamChunk(
             delta_content=delta.get("content"),
             delta_tool_calls=delta.get("tool_calls"),
             finish_reason=choice.get("finish_reason"),
+            usage=data.get("usage"),
         )

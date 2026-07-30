@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>设置 · 溯光 Lumitrace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260724" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260728-search" />
   </head>
   <body>
     <div class="app-shell">
@@ -30,13 +30,14 @@
               </section>
 
               <section class="panel settings-section">
-                <div class="settings-title"><span class="settings-index">2</span><div><h2>搜索与 Embedding</h2><p>搜索服务和语义检索状态</p></div></div>
+                <div class="settings-title"><span class="settings-index">2</span><div><h2>搜索与 Embedding</h2><p>搜索服务商与语义检索状态</p></div></div>
                 <div class="field-grid">
-                  <label><span>搜索服务商</span><input id="searchProvider" readonly /></label>
-                  <label><span>搜索 API Key</span><input id="searchKey" readonly /></label>
+                  <label><span>搜索服务商</span><select id="searchProvider"><option value="duckduckgo">DuckDuckGo（无需 Key）</option><option value="serpapi">SerpAPI（需要 Key）</option><option value="tavily">Tavily（需要 Key）</option></select><small id="searchProviderHelp" class="field-help">搜索质量直接影响证据质量；DuckDuckGo 免费但限流较严。</small></label>
+                  <label><span>搜索 API Key</span><input id="searchKey" type="password" autocomplete="off" placeholder="留空则保留当前 Key" /><small id="searchKeyHelp" class="field-help">仅 SerpAPI / Tavily 需要。</small></label>
                   <label><span>Embedding 模型</span><input id="embeddingModel" readonly /></label>
                   <label><span>Embedding 状态</span><input id="embeddingStatus" readonly /></label>
                 </div>
+                <div class="settings-actions"><span class="muted">保存后写入本地 <code>.env</code>，立即用于后续调研。</span><div class="inline"><button id="testSearch" class="button secondary" type="button">测试搜索</button><button id="saveSearch" class="button primary" type="button">保存搜索配置</button></div></div>
               </section>
 
               <section class="panel settings-section">
@@ -65,7 +66,7 @@
         </div>
       </main>
     </div>
-    <script src="/static/ui.js?v=20260724"></script>
-    <script src="/static/settings.js?v=20260724"></script>
+    <script src="/static/ui.js?v=20260728-search"></script>
+    <script src="/static/settings.js?v=20260728-search"></script>
   </body>
 </html>

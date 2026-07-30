@@ -16,7 +16,7 @@ from ..agent_skills import load_project_skill
 from ..llm import LLMClient
 from ..report_charts import load_chart_manifest
 from ..report_layout import generate_typeset_artifacts
-from ..sources.api import build_runtime
+from ..sources.runtime import get_service
 from ..sources.citations import render_citation, validate_report_citations
 from ..sources.enums import VerificationStatus
 from ..sources.models import EvidenceRecord, SourceAsset
@@ -35,26 +35,23 @@ _PROMPT_FORMATTER = Path(__file__).parent / "prompts" / "formatter.md"
 def _require_delivery_evidence(
     state: "ProjectState",
 ) -> tuple[list[EvidenceRecord], dict[str, SourceAsset]]:
-    service, _ = build_runtime(config.SOURCE_DATA_DIR)
+    service = get_service(config.SOURCE_DATA_DIR)
     project_id = state.project_dir.name
-    try:
-        evidence = service.repository.list_evidence(project_id)
-        supported = [
-            item
-            for item in evidence
-            if item.verification_status == VerificationStatus.SUPPORTED
-        ]
-        requirements = [
-            ResearchRequirement(question_id=value)
-            for value in sorted({item.research_question_id for item in supported})
-        ]
-        gate = service.quality_gate(project_id, requirements)
-        sources = {
-            source.source_id: source
-            for source in service.list_sources(project_id, include_superseded=True)
-        }
-    finally:
-        service.repository.close()
+    evidence = service.repository.list_evidence(project_id)
+    supported = [
+        item
+        for item in evidence
+        if item.verification_status == VerificationStatus.SUPPORTED
+    ]
+    requirements = [
+        ResearchRequirement(question_id=value)
+        for value in sorted({item.research_question_id for item in supported})
+    ]
+    gate = service.quality_gate(project_id, requirements)
+    sources = {
+        source.source_id: source
+        for source in service.list_sources(project_id, include_superseded=True)
+    }
     state.notes["quality_gate"] = gate.status.value
     state.notes["quality_gate_reasons"] = gate.reasons
     valid, errors = validate_report_citations(supported, sources)

@@ -4,16 +4,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .. import config
-from ..sources.api import build_runtime
 from ..sources.citations import render_citation
 from ..sources.enums import VerificationStatus
+from ..sources.runtime import get_service
 
 if TYPE_CHECKING:
     from ..state import ProjectState
 
 
 def source_context(state: "ProjectState") -> str:
-    service, _ = build_runtime(config.SOURCE_DATA_DIR)
+    service = get_service(config.SOURCE_DATA_DIR)
     project_id = state.project_dir.name
     sources = service.list_sources(project_id)
     summary = "\n".join(
@@ -30,7 +30,6 @@ def source_context(state: "ProjectState") -> str:
         if source and item.verification_status == VerificationStatus.SUPPORTED:
             evidence_lines.append(f"- {render_citation(item, source)} {item.claim} | excerpt: {item.excerpt}")
     evidence_summary = "\n".join(evidence_lines) or "- 当前没有已验证 EvidenceRecord"
-    service.repository.close()
     return f"""
 
 ## Project Source Evidence Contract

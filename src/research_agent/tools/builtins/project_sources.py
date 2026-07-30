@@ -6,12 +6,11 @@ import hashlib
 from pathlib import Path
 import re
 import uuid
-from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
 
 from ... import config
-from ...sources.api import build_runtime
+from ...sources.runtime import get_service
 from ...sources.search import SearchFilters
 from ...sources.enums import LocatorType, VerificationStatus
 from ...sources.models import EvidenceRecord, SourceLocator, utcnow
@@ -19,9 +18,9 @@ from ..registry import default_registry
 from .web_fetch import WebResource, fetch_web_resource
 
 
-@lru_cache(maxsize=1)
 def _service():
-    return build_runtime(config.SOURCE_DATA_DIR)[0]
+    """取共享运行时。缓存在 sources.runtime，配置变更时由 reset_runtime 失效。"""
+    return get_service(config.SOURCE_DATA_DIR)
 
 
 def _dump(value) -> str:

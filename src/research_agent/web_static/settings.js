@@ -5,6 +5,15 @@ let config = null;
 
 function value(id, content) { $(id).value = content ?? ""; }
 
+function renderSearchKeyState() {
+  const provider = $("searchProvider").value;
+  const needsKey = provider !== "duckduckgo";
+  $("searchKey").disabled = !needsKey;
+  $("searchKeyHelp").textContent = needsKey
+    ? `${provider} 需要 API Key；未配置时搜索会直接报错而不静默降级。`
+    : "DuckDuckGo 无需 Key。";
+}
+
 function renderStatus() {
   if (!config) return;
   $("configStatus").innerHTML = `<div class="detail-row"><span>模型 API</span><strong><i class="status-dot ${config.has_api_key ? "success" : "warning"}"></i> ${config.has_api_key ? "已配置" : "缺少 Key"}</strong></div><div class="detail-row"><span>搜索服务</span><strong><i class="status-dot success"></i> ${Lumitrace.escapeHtml(config.search_provider || "duckduckgo")}</strong></div><div class="detail-row"><span>语义检索</span><strong><i class="status-dot ${config.embedding_model ? "success" : "neutral"}"></i> ${config.embedding_model ? "已启用" : "未启用"}</strong></div>`;
@@ -19,7 +28,9 @@ function populateConfig() {
   value("retries", config.max_retries ?? 3);
   value("temperature", config.temperature ?? 0.7);
   value("searchProvider", config.search_provider || "duckduckgo");
-  value("searchKey", config.has_search_api_key ? "••••••••••••••••  已配置" : "无需配置或未配置");
+  $("searchKey").value = "";
+  $("searchKey").placeholder = config.has_search_api_key ? "已配置；留空则保留当前 Key" : "请输入搜索 API Key";
+  renderSearchKeyState();
   value("embeddingModel", config.embedding_model || "未配置");
   value("embeddingStatus", config.embedding_model ? "语义向量检索已启用" : "使用离线关键词检索");
   value("defaultRounds", config.default_rounds ?? 3);
@@ -121,9 +132,47 @@ async function testConnection() {
   }
 }
 
+async function saveSearchConfig() {
+  const button = $("saveSearch");
+  try {
+    const provider = $("searchProvider").value;
+    const apiKey = $("searchKey").value.trim();
+    if (provider !== "duckduckgo" && !apiKey && !config?.has_search_api_key) {
+      throw new Error(`${provider} 需要搜索 API Key`);
+    }
+    Lumitrace.setButtonBusy(button, true, "保存中");
+    config = await Lumitrace.api("/api/config/search", {
+      method: "PUT",
+      body: JSON.stringify({ provider, api_key: apiKey || null }),
+    });
+    populateConfig();
+    Lumitrace.toast("搜索配置已保存并生效");
+  } catch (error) {
+    Lumitrace.toast(error.message, "danger");
+  } finally {
+    Lumitrace.setButtonBusy(button, false);
+  }
+}
+
+async function testSearch() {
+  const button = $("testSearch");
+  Lumitrace.setButtonBusy(button, true, "测试中");
+  try {
+    const result = await Lumitrace.api("/api/config/search/test", { method: "POST" });
+    Lumitrace.toast(`${result.provider}：${result.message}`);
+  } catch (error) {
+    Lumitrace.toast(error.message, "danger");
+  } finally {
+    Lumitrace.setButtonBusy(button, false);
+  }
+}
+
 $("saveModel").addEventListener("click", saveModelConfig);
 $("testConnection").addEventListener("click", testConnection);
 $("saveWorkspace").addEventListener("click", saveWorkspaceConfig);
+$("saveSearch").addEventListener("click", saveSearchConfig);
+$("testSearch").addEventListener("click", testSearch);
+$("searchProvider").addEventListener("change", renderSearchKeyState);
 $("copyEnv").addEventListener("click", async () => {
   const template = `LLM_BASE_URL=${config?.base_url || "https://api.openai.com/v1"}\nLLM_API_KEY=\nLLM_MODEL=${config?.model || "gpt-4o"}\nLLM_TIMEOUT=${config?.timeout || 120}\nLLM_MAX_RETRIES=${config?.max_retries || 3}\nLLM_TEMPERATURE=${config?.temperature ?? 0.7}\nSEARCH_API_PROVIDER=${config?.search_provider || "duckduckgo"}\nSEARCH_API_KEY=\nSOURCE_EMBEDDING_BASE_URL=\nSOURCE_EMBEDDING_API_KEY=\nSOURCE_EMBEDDING_MODEL=\nMAX_COLLECT_ROUNDS=${config?.default_rounds || 3}\nOUTPUT_PREFERENCE=${config?.output_preference || "balanced"}\nPROJECTS_DIR=${config?.projects_dir || ""}\nSOURCE_DATA_DIR=${config?.source_data_dir || ""}`;
   try { await navigator.clipboard.writeText(template); Lumitrace.toast("配置模板已复制"); }

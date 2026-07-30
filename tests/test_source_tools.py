@@ -6,6 +6,7 @@ import pytest
 from research_agent import config
 from research_agent.sources import LocalObjectStore, SQLiteRepository, SourceService
 from research_agent.sources.models import SourceLocator
+from research_agent.sources.runtime import reset_runtime
 from research_agent.sources.enums import LocatorType
 from research_agent.sources.quality import ResearchRequirement
 from research_agent.tools import default_registry
@@ -16,7 +17,7 @@ from research_agent.tools.builtins.web_fetch import WebResource
 @pytest.mark.anyio
 async def test_four_source_tools_are_project_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
-    project_sources._service.cache_clear()
+    reset_runtime()
     repository = SQLiteRepository(tmp_path / "sources" / "catalog.sqlite3")
     service = SourceService(repository, LocalObjectStore(tmp_path / "sources" / "objects"))
     source = service.register_bytes("project", "facts.txt", b"Revenue was 42 million").source
@@ -52,7 +53,7 @@ async def test_public_web_source_can_create_evidence_without_upload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
-    project_sources._service.cache_clear()
+    reset_runtime()
     html = b"""<!doctype html><html><head><title>Official Results</title></head>
     <body><h1>Quarterly update</h1><p>Revenue reached 42 million in Q2.</p></body></html>"""
 
@@ -97,7 +98,7 @@ async def test_public_web_source_can_create_evidence_without_upload(
     gate = service.quality_gate("web-project", [ResearchRequirement(question_id="q1")])
     assert recorded["source_id"] == source_id
     assert gate.passed is True
-    project_sources._service.cache_clear()
+    reset_runtime()
 
 
 def test_media_url_cannot_self_declare_as_s_tier() -> None:

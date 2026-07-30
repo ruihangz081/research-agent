@@ -23,6 +23,10 @@ DEFAULT_MODEL: str = LLM_MODEL
 SEARCH_API_PROVIDER: str = os.getenv("SEARCH_API_PROVIDER", "duckduckgo")
 SEARCH_API_KEY: str = os.getenv("SEARCH_API_KEY", "")
 
+# === 本地网页工作台访问控制 ===
+# 绑定到非回环地址时必须提供令牌，否则任何人都能读取调研数据、改模型配置、删项目。
+WEB_AUTH_TOKEN: str = os.getenv("WEB_AUTH_TOKEN", "")
+
 # === Agent1 对话轮次上限 ===
 STRATEGIST_MAX_ROUNDS: int = int(os.getenv("STRATEGIST_MAX_ROUNDS", "5"))
 

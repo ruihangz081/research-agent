@@ -11,6 +11,7 @@ import json
 import logging
 from typing import Any, Awaitable, Callable
 
+from .. import token_usage
 from ..llm.client import LLMClient
 from ..llm.types import (
     ChatMessage,
@@ -29,16 +30,71 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════
 
 
+class _ToolErrorTracker:
+    """跟踪同一工具重复返回相同错误的次数。
+
+    模型有时会用同样的错误参数反复调用同一个工具。没有这个保护，循环会一路
+    烧到 `max_turns`，白花 token 且最终仍然失败。`run_agent` 与 `AgentSession`
+    共用这份逻辑，避免两个入口的保护强度不一致。
+    """
+
+    def __init__(self, threshold: int) -> None:
+        self.threshold = threshold
+        self._counts: dict[tuple[str, str], int] = {}
+
+    def record(self, tool_name: str, result: str) -> None:
+        """登记一次工具结果；同一错误达到阈值时抛出 AgentLoopStuckError。"""
+        if not result.startswith("Error executing tool '"):
+            # 该工具本轮成功，清掉它此前累积的错误计数
+            self._counts = {
+                key: count for key, count in self._counts.items() if key[0] != tool_name
+            }
+            return
+
+        key = (tool_name, result)
+        self._counts[key] = self._counts.get(key, 0) + 1
+        if self._counts[key] >= self.threshold:
+            raise AgentLoopStuckError(
+                f"tool {tool_name!r} returned the same error "
+                f"{self._counts[key]} times; agent execution stopped"
+            )
+
+
+async def _run_tool_calls(
+    response: LLMResponse,
+    messages: list[ChatMessage],
+    tool_registry: ToolRegistry,
+    cwd: str,
+    tracker: _ToolErrorTracker,
+) -> None:
+    """执行本轮全部 tool_call，把结果作为 tool 消息追加进历史。"""
+    for tc in response.tool_calls or []:
+        result = await _execute_tool_call(tc, tool_registry, cwd)
+        tracker.record(tc.function.name, result)
+        messages.append(
+            ChatMessage(
+                role="tool",
+                content=result,
+                tool_call_id=tc.id,
+                name=tc.function.name,
+            )
+        )
+
+
 async def run_agent(
     user_prompt: str,
     options: AgentOptions,
     llm_client: LLMClient,
     tool_registry: ToolRegistry,
     on_assistant_text: Callable[[str], Awaitable[None]] | None = None,
+    on_usage: Callable[[dict[str, int] | None], None] | None = None,
 ) -> str:
     """运行单次 agent 任务至完成。
 
     循环：user_prompt → LLM → [tool_calls → 执行 → 回传]* → 最终文本
+
+    `on_usage` 会在每次 LLM 响应后收到该次调用的 usage（可能为 None），
+    用于累计 token 消耗。
 
     返回最终的 assistant 文本响应。
     """
@@ -47,7 +103,7 @@ async def run_agent(
         ChatMessage(role="user", content=user_prompt),
     ]
     tool_schemas = tool_registry.get_schemas(options.allowed_tools or None)
-    repeated_errors: dict[tuple[str, str], int] = {}
+    tracker = _ToolErrorTracker(options.max_repeated_tool_errors)
 
     for turn in range(options.max_turns):
         # 1. 调用 LLM
@@ -64,41 +120,28 @@ async def run_agent(
                 temperature=options.temperature,
                 max_tokens=options.max_tokens,
             )
+        if on_usage is not None:
+            on_usage(response.usage)
+        else:
+            token_usage.report(response.usage)
 
         # 2. 追加 assistant 消息
-        assistant_msg = ChatMessage(
-            role="assistant",
-            content=response.content,
-            tool_calls=response.tool_calls,
+        messages.append(
+            ChatMessage(
+                role="assistant",
+                content=response.content,
+                tool_calls=response.tool_calls,
+            )
         )
-        messages.append(assistant_msg)
 
         # 3. 无 tool_call → 完成
         if not response.tool_calls:
             return response.content or ""
 
-        # 4. 执行每个 tool_call
-        for tc in response.tool_calls:
-            result = await _execute_tool_call(tc, tool_registry, options.cwd)
-            if result.startswith("Error executing tool '"):
-                error_key = (tc.function.name, result)
-                repeated_errors[error_key] = repeated_errors.get(error_key, 0) + 1
-                if repeated_errors[error_key] >= options.max_repeated_tool_errors:
-                    raise AgentLoopStuckError(
-                        f"tool {tc.function.name!r} returned the same error "
-                        f"{repeated_errors[error_key]} times; agent execution stopped"
-                    )
-            else:
-                repeated_errors = {
-                    key: count for key, count in repeated_errors.items()
-                    if key[0] != tc.function.name
-                }
-            messages.append(ChatMessage(
-                role="tool",
-                content=result,
-                tool_call_id=tc.id,
-                name=tc.function.name,
-            ))
+        # 4. 执行本轮 tool_call
+        await _run_tool_calls(
+            response, messages, tool_registry, options.cwd, tracker
+        )
 
         logger.debug("Turn %d: executed %d tool calls", turn + 1, len(response.tool_calls))
 
@@ -132,16 +175,21 @@ class AgentSession:
         llm_client: LLMClient,
         tool_registry: ToolRegistry,
         on_assistant_text: Callable[[str], Awaitable[None]] | None = None,
+        on_usage: Callable[[dict[str, int] | None], None] | None = None,
     ):
         self.options = options
         self.llm_client = llm_client
         self.tool_registry = tool_registry
         self.on_assistant_text = on_assistant_text
+        self.on_usage = on_usage
         self.messages: list[ChatMessage] = [
             ChatMessage(role="system", content=options.system_prompt),
         ]
         self._tool_schemas = tool_registry.get_schemas(options.allowed_tools or None)
         self._turns_used = 0
+        # 与 run_agent 共用同一份重复错误保护：跨轮累计，避免模型在多轮对话里
+        # 反复用同样的错误参数调同一个工具，一路烧到 max_turns
+        self._tracker = _ToolErrorTracker(options.max_repeated_tool_errors)
 
     async def query(self, user_input: str) -> None:
         """添加用户消息到历史。"""
@@ -150,7 +198,8 @@ class AgentSession:
     async def get_response(self) -> str:
         """获取 LLM 响应，执行工具调用循环直到产出最终文本。
 
-        返回本轮的 assistant 文本。
+        返回本轮的 assistant 文本。同一工具重复返回相同错误达到阈值时抛出
+        AgentLoopStuckError。
         """
         for _ in range(self.options.max_turns):
             if self.options.stream and self.on_assistant_text:
@@ -167,28 +216,30 @@ class AgentSession:
                     temperature=self.options.temperature,
                     max_tokens=self.options.max_tokens,
                 )
+            if self.on_usage is not None:
+                self.on_usage(response.usage)
+            else:
+                token_usage.report(response.usage)
 
-            assistant_msg = ChatMessage(
-                role="assistant",
-                content=response.content,
-                tool_calls=response.tool_calls,
+            self.messages.append(
+                ChatMessage(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                )
             )
-            self.messages.append(assistant_msg)
             self._turns_used += 1
 
             if not response.tool_calls:
                 return response.content or ""
 
-            for tc in response.tool_calls:
-                result = await _execute_tool_call(
-                    tc, self.tool_registry, self.options.cwd
-                )
-                self.messages.append(ChatMessage(
-                    role="tool",
-                    content=result,
-                    tool_call_id=tc.id,
-                    name=tc.function.name,
-                ))
+            await _run_tool_calls(
+                response,
+                self.messages,
+                self.tool_registry,
+                self.options.cwd,
+                self._tracker,
+            )
 
         return ""
 
@@ -237,6 +288,7 @@ async def _stream_call(
     full_content = ""
     tool_calls_acc: dict[int, dict[str, Any]] = {}  # index → accumulated data
     finish_reason = None
+    usage: dict[str, int] | None = None
 
     async for chunk in client.chat_stream(
         messages,
@@ -248,6 +300,10 @@ async def _stream_call(
         if chunk.delta_content:
             full_content += chunk.delta_content
             await on_text(chunk.delta_content)
+
+        # usage 通常只在最后一个 chunk 出现（stream_options.include_usage）
+        if chunk.usage:
+            usage = chunk.usage
 
         # tool_call delta（增量拼接）
         if chunk.delta_tool_calls:
@@ -272,22 +328,25 @@ async def _stream_call(
             finish_reason = chunk.finish_reason
 
     # 组装 tool_calls
+    # 按 index 排序：OpenAI 流式协议用 index 标识 tool_call 顺序，id 只是随机串，
+    # 按 id 排序会在并行 tool_call 时打乱顺序。
     parsed_tcs = None
     if tool_calls_acc:
         parsed_tcs = [
             ToolCallInfo(
-                id=v["id"],
-                type=v["type"],
+                id=value["id"],
+                type=value["type"],
                 function=FunctionCallInfo(
-                    name=v["function"]["name"],
-                    arguments=v["function"]["arguments"],
+                    name=value["function"]["name"],
+                    arguments=value["function"]["arguments"],
                 ),
             )
-            for v in sorted(tool_calls_acc.values(), key=lambda x: x.get("id", ""))
+            for _, value in sorted(tool_calls_acc.items(), key=lambda item: item[0])
         ]
 
     return LLMResponse(
         content=full_content or None,
         tool_calls=parsed_tcs,
         finish_reason=finish_reason,
+        usage=usage,
     )

@@ -89,3 +89,5 @@ class StreamChunk:
     delta_content: str | None = None
     delta_tool_calls: list[dict[str, Any]] | None = None  # 原始 delta
     finish_reason: str | None = None
+    # 开启 stream_options.include_usage 后，最后一个 chunk 携带用量统计
+    usage: dict[str, int] | None = None
