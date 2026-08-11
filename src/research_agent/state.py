@@ -83,6 +83,7 @@ class ProjectState(BaseModel):
 
     # Agent4/5 产出
     analysis_path: str | None = None
+    analysis_outcome_path: str | None = None
     final_report_path: str | None = None
     chart_manifest_path: str | None = None
     final_report_html_path: str | None = None

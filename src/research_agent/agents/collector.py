@@ -169,6 +169,19 @@ async def run_collection_round(
     for k, v in replacements.items():
         system_prompt = system_prompt.replace(k, v)
     system_prompt += plan_prompt_context(state)
+    analysis_gaps = state.notes.get("analysis_gap_requests", [])
+    if analysis_gaps:
+        gap_lines = "\n".join(
+            f"- question_id={item['question_id']} | reason={item['reason']} | "
+            f"needed_evidence={item['needed_evidence']}"
+            for item in analysis_gaps
+        )
+        system_prompt += (
+            "\n\n## Agent4 显式补研请求\n"
+            "这些请求不是新任务协议；本轮仍须按现有流程采集，随后交给 Agent3 "
+            "验证并通过 QualityGate。\n"
+            f"{gap_lines}\n"
+        )
 
     system_prompt += (
         f"\n\n## 当前项目参数\n"

@@ -4,6 +4,11 @@ from pathlib import Path
 import pytest
 
 from research_agent import config, orchestrator
+from research_agent.sources import LocalObjectStore, SQLiteRepository, SourceService
+from research_agent.sources.citations import render_citation
+from research_agent.sources.enums import VerificationStatus
+from research_agent.sources.models import EvidenceRecord
+from research_agent.sources.runtime import reset_runtime
 from research_agent.state import ProjectState, Stage
 
 
@@ -263,7 +268,37 @@ async def test_cli_host_drives_same_state_machine_to_done(
     projects_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """CLI 风格宿主（全部检查点直接通过）能把同一状态机推到 DONE。"""
+    monkeypatch.setattr(config, "SOURCE_DATA_DIR", projects_dir / "sources")
+    reset_runtime()
     state = ProjectState(topic="全通", date_str="20260728")
+    repository = SQLiteRepository(config.SOURCE_DATA_DIR / "catalog.sqlite3")
+    service = SourceService(
+        repository,
+        LocalObjectStore(config.SOURCE_DATA_DIR / "objects"),
+    )
+    source = service.register_bytes(
+        state.project_dir.name,
+        "facts.txt",
+        b"Revenue reached 42 million",
+    ).source
+    service.parse_source(state.project_dir.name, source.source_id)
+    chunk = service.index_source(state.project_dir.name, source.source_id)[0]
+    service.activate(state.project_dir.name, source.source_id)
+    evidence = EvidenceRecord(
+        evidence_id="ev-state-machine",
+        project_id=state.project_dir.name,
+        research_question_id="q1",
+        claim="Revenue reached 42 million",
+        source_id=source.source_id,
+        source_version=source.version,
+        chunk_id=chunk.chunk_id,
+        locator=chunk.locators[0],
+        excerpt="Revenue reached 42 million",
+        verification_status=VerificationStatus.SUPPORTED,
+        confidence=1,
+    )
+    service.record_evidence(evidence)
+    citation = render_citation(evidence, source)
     approve = orchestrator.CheckpointResult(
         decision=orchestrator.CheckpointDecision.APPROVED
     )
@@ -282,7 +317,15 @@ async def test_cli_host_drives_same_state_machine_to_done(
 
     async def fake_analysis(target: ProjectState) -> Path:
         path = target.project_dir / config.FILE_ANALYSIS
-        path.write_text("# analysis", encoding="utf-8")
+        path.write_text(
+            f"# analysis\n\nRevenue reached 42 million {citation}",
+            encoding="utf-8",
+        )
+        outcome_path = target.project_dir / config.FILE_ANALYSIS_OUTCOME
+        outcome_path.write_text(
+            '{"schema_version":"1.0","status":"completed","gap_requests":[]}',
+            encoding="utf-8",
+        )
         return path
 
     async def fake_formatting(target: ProjectState) -> Path:
@@ -302,6 +345,7 @@ async def test_cli_host_drives_same_state_machine_to_done(
     assert host.done_announced is True
     assert host.checkpoints_seen == ["outline", "sources_draft", "sources_final"]
     assert Path(state.final_report_path).exists()
+    repository.close()
 
 
 @pytest.mark.anyio

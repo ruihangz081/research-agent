@@ -33,6 +33,7 @@ from . import checkpoints, config, research_plan, token_usage
 from .agent_loop import AgentLoopStuckError
 from .agents import analyst, collector, formatter, strategist, validator
 from .research_plan import ResearchPlanError
+from .sources.citations import audit_analysis_citations
 from .sources.runtime import get_service
 from .state import ProjectState, Stage
 
@@ -139,6 +140,14 @@ class ResearchPlanBlockedError(PipelineError):
     pass
 
 
+class AnalysisBoundaryError(PipelineError):
+    """Agent4 outcome or citations failed deterministic validation."""
+
+
+class AnalysisResearchRequiredError(PipelineError):
+    """Agent4 requested explicit additional research before Agent5."""
+
+
 def _quality_gate_error(state: ProjectState, max_rounds: int) -> QualityGateError:
     """构造审查未通过的错误，并标记为可重试。"""
     reasons = "; ".join(state.notes.get("quality_gate_reasons", [])) or "未给出具体原因"
@@ -240,6 +249,59 @@ def _assert_delivery_ready(state: ProjectState) -> None:
     state.notes["quality_gate_reasons"] = gate.reasons
     state.notes.pop("delivery_blocked_stage", None)
     state.save()
+
+
+def _validate_analysis_transition(
+    state: ProjectState,
+    analysis_path: Path,
+) -> analyst.AnalysisOutcome:
+    """Fail closed before Agent4 can transition to Agent5."""
+    outcome_path = state.project_dir / config.FILE_ANALYSIS_OUTCOME
+    try:
+        outcome = analyst.load_analysis_outcome(state, outcome_path)
+    except (analyst.AnalysisOutcomeError, ResearchPlanError) as exc:
+        error = AnalysisBoundaryError(str(exc))
+        state.notes["analysis_outcome_status"] = "invalid"
+        state.mark_failure("Agent4·AnalysisOutcome 门禁", str(error))
+        raise error from exc
+
+    state.analysis_path = str(analysis_path)
+    state.analysis_outcome_path = str(outcome_path)
+    state.notes["analysis_outcome_status"] = outcome.status.value
+
+    if outcome.status == analyst.AnalysisStatus.NEEDS_MORE_RESEARCH:
+        gaps = [request.model_dump() for request in outcome.gap_requests]
+        state.notes["analysis_gap_requests"] = gaps
+        summary = "; ".join(
+            f"{item['question_id']}: {item['reason']}（需要：{item['needed_evidence']}）"
+            for item in gaps
+        )
+        error = AnalysisResearchRequiredError(
+            f"Agent4 判定需要补研：{summary}。Agent5 未启动；"
+            "请显式重试以回到 Agent2↔Agent3 采集验证阶段。"
+        )
+        state.mark_failure("Agent4·补研请求", str(error))
+        raise error
+
+    analysis_text = analysis_path.read_text(encoding="utf-8")
+    service = get_service(config.SOURCE_DATA_DIR)
+    citation_errors = audit_analysis_citations(
+        analysis_text,
+        state.project_dir.name,
+        service.repository,
+    )
+    if citation_errors:
+        state.notes["analysis_citation_audit_errors"] = citation_errors
+        error = AnalysisBoundaryError(
+            "Agent4 来源引用审计失败：" + "; ".join(citation_errors)
+        )
+        state.mark_failure("Agent4·来源引用审计", str(error))
+        raise error
+
+    state.notes.pop("analysis_gap_requests", None)
+    state.notes.pop("analysis_citation_audit_errors", None)
+    state.save()
+    return outcome
 
 
 def recover_blocked_delivery(state: ProjectState) -> bool:
@@ -349,6 +411,26 @@ def prepare_retry(state: ProjectState, *, extra_rounds: int = RETRY_EXTRA_ROUNDS
     state.last_error = None
     state.notes["last_retry_at"] = datetime.now().isoformat()
     state.notes["last_retry_stage"] = failed_stage
+
+    if (
+        state.stage == Stage.ANALYZING
+        and state.notes.get("analysis_outcome_status") == "needs_more_research"
+        and state.notes.get("analysis_gap_requests")
+    ):
+        budget = state.max_collect_rounds or config.MAX_COLLECT_ROUNDS
+        if state.collect_round >= budget:
+            state.max_collect_rounds = max(budget, state.collect_round) + max(
+                1, extra_rounds
+            )
+        state.converged = False
+        state.notes["analysis_outcome_status"] = "retrying_research"
+        state.notes["quality_gate"] = "revalidating"
+        state.notes["quality_gate_reasons"] = []
+        state.advance_to(Stage.COLLECTING_AND_VALIDATING)
+        return (
+            "Agent4 请求补研，已保留现有材料、EvidenceRecord 和历史轮次，"
+            f"将从第 {state.collect_round + 1} 轮继续采集验证"
+        )
 
     if state.stage in {Stage.ANALYZING, Stage.FORMATTING, Stage.AWAIT_FINAL_SOURCE_APPROVAL} and (
         state.notes.get("delivery_blocked_stage") == "evidence"
@@ -727,7 +809,7 @@ async def run_state_machine(state: ProjectState, host: PipelineHost) -> None:
             analysis_path = await _safe_run(
                 "Agent4·深度分析", state, analyst.run_analysis, state,
             )
-            state.analysis_path = str(analysis_path)
+            _validate_analysis_transition(state, analysis_path)
             state.advance_to(Stage.FORMATTING)
 
         # ================== 阶段 5: Agent5 排版交付 ==================
