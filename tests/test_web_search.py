@@ -4,6 +4,7 @@
 但搜索代码从未读取，用户填了 Key 也不生效。
 """
 import importlib
+import json
 
 import httpx
 import pytest
@@ -13,6 +14,89 @@ from research_agent import config
 # builtins/__init__ 里的 `from .web_search import web_search` 会用同名函数遮蔽
 # 子模块属性，所以 `import ... as ws` 拿到的是函数。用 importlib 取模块本身。
 ws = importlib.import_module("research_agent.tools.builtins.web_search")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("api_key", "expected_authorization"),
+    [("anysearch-key", "Bearer anysearch-key"), ("", None)],
+)
+async def test_anysearch_results_and_optional_auth(
+    monkeypatch: pytest.MonkeyPatch,
+    api_key: str,
+    expected_authorization: str | None,
+) -> None:
+    monkeypatch.setattr(config, "SEARCH_API_PROVIDER", "anysearch")
+    monkeypatch.setattr(config, "SEARCH_API_KEY", api_key)
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "message": "success",
+                "data": {
+                    "results": [
+                        {
+                            "title": "权威来源",
+                            "url": "https://example.gov.cn/report",
+                            "snippet": "2025 年官方数据",
+                            "content": "搜索正文不能绕过项目证据入库流程。",
+                        }
+                    ]
+                },
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original = httpx.AsyncClient
+
+    def patched(*args, **kwargs):
+        kwargs["transport"] = transport
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", patched)
+
+    result = await ws.web_search("2025 官方数据", num_results=3)
+
+    assert captured["authorization"] == expected_authorization
+    assert captured["payload"] == {
+        "query": "2025 官方数据",
+        "max_results": 3,
+        "format": "json",
+    }
+    assert "权威来源" in result
+    assert "2025 年官方数据" in result
+    assert "不能绕过" not in result
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("failure_mode", ["error", "empty"])
+async def test_anysearch_failure_or_empty_results_fall_back_to_duckduckgo(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_mode: str,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(config, "SEARCH_API_PROVIDER", "anysearch")
+
+    async def unavailable_anysearch(query, num_results):
+        calls.append("anysearch")
+        if failure_mode == "error":
+            raise httpx.TimeoutException("timed out")
+        return []
+
+    async def working_ddg(query, num_results):
+        calls.append("duckduckgo")
+        return "DDG fallback result"
+
+    monkeypatch.setattr(ws, "_search_anysearch", unavailable_anysearch)
+    monkeypatch.setattr(ws, "_search_duckduckgo_with_fallback", working_ddg)
+
+    assert await ws.web_search("任意查询") == "DDG fallback result"
+    assert calls == ["anysearch", "duckduckgo"]
 
 
 @pytest.mark.anyio

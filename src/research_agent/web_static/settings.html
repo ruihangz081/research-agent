@@ -32,7 +32,7 @@
               <section class="panel settings-section">
                 <div class="settings-title"><span class="settings-index">2</span><div><h2>搜索与 Embedding</h2><p>搜索服务商与语义检索状态</p></div></div>
                 <div class="field-grid">
-                  <label><span>搜索服务商</span><select id="searchProvider"><option value="duckduckgo">DuckDuckGo（无需 Key）</option><option value="serpapi">SerpAPI（需要 Key）</option><option value="tavily">Tavily（需要 Key）</option></select><small id="searchProviderHelp" class="field-help">搜索质量直接影响证据质量；DuckDuckGo 免费但限流较严。</small></label>
+                  <label><span>搜索服务商</span><select id="searchProvider"><option value="anysearch">AnySearch（默认，Key 可选）</option><option value="duckduckgo">DuckDuckGo（无需 Key）</option><option value="serpapi">SerpAPI（需要 Key）</option><option value="tavily">Tavily（需要 Key）</option></select><small id="searchProviderHelp" class="field-help">AnySearch 默认启用，失败或无结果时自动降级到 DuckDuckGo。</small></label>
                   <label><span>搜索 API Key</span><input id="searchKey" type="password" autocomplete="off" placeholder="留空则保留当前 Key" /><small id="searchKeyHelp" class="field-help">仅 SerpAPI / Tavily 需要。</small></label>
                   <label><span>Embedding 模型</span><input id="embeddingModel" readonly /></label>
                   <label><span>Embedding 状态</span><input id="embeddingStatus" readonly /></label>

@@ -202,6 +202,5 @@ async def run_analysis(state: "ProjectState") -> Path:
 
     if not analysis_path.exists():
         raise RuntimeError(f"Agent4 未能生成分析报告：{analysis_path}")
-
     console.print(f"\n[green]✓ 深度分析完成：{analysis_path.name}[/green]")
     return analysis_path

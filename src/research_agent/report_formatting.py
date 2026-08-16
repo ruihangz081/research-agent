@@ -29,6 +29,13 @@ _PLACEHOLDER = re.compile(
     r"^[ \t]*\{\{chart:([a-z0-9][a-z0-9_-]{0,63})\}\}[ \t]*$",
     re.MULTILINE,
 )
+_REPORT_CITATION = re.compile(
+    r"\[src:\s*(src_[A-Za-z0-9_-]+)(?::v\d+)?(?:\s*,[^\]\r\n]*)?\]",
+    re.IGNORECASE,
+)
+_EVIDENCE_ID = re.compile(r"\bev_([0-9a-f]{32})\b", re.IGNORECASE)
+_SOURCE_ID = re.compile(r"\bsrc_([0-9a-f]{32})\b", re.IGNORECASE)
+_INLINE_CODE = re.compile(r"`([^`\r\n]+)`")
 _DISCLAIMER = "本报告基于公开信息和用户授权材料自动整理，仅供研究参考，不构成任何投资建议。"
 _PLAIN_TEXT_REPLACEMENTS = {
     "✅": "",
@@ -39,6 +46,9 @@ _PLAIN_TEXT_REPLACEMENTS = {
     "🟢": "",
     "❌": "不确定",
     "≈": "约",
+    "≥": ">=",
+    "≤": "<=",
+    "σ": "sigma",
     "①": "(1)",
     "②": "(2)",
     "③": "(3)",
@@ -72,7 +82,11 @@ def find_pandoc() -> str | None:
 def find_latex_engine() -> str | None:
     configured = config.REPORT_LATEX_ENGINE
     if Path(configured).is_file():
-        return str(Path(configured).resolve())
+        # TeX distributions commonly expose ``xelatex`` as a symlink to the
+        # underlying ``xetex`` binary.  Preserving argv[0] is significant:
+        # resolving that symlink makes XeTeX load the plain-TeX format instead
+        # of the LaTeX format.
+        return str(Path(configured).absolute())
     found = shutil.which(configured)
     if found:
         return found
@@ -89,6 +103,61 @@ def _ensure_disclaimer(markdown: str) -> str:
         + _DISCLAIMER
         + "\n"
     )
+
+
+def render_report_citations_for_html(markdown: str, project_id: str) -> str:
+    """Render source markers as numbered material links before Pandoc runs."""
+    citation_numbers: dict[str, int] = {}
+
+    def citation_markup(match: re.Match[str]) -> str:
+        source_id = match.group(1)
+        number = citation_numbers.setdefault(source_id, len(citation_numbers) + 1)
+        href = (
+            f"/materials?project={quote(project_id, safe='')}"
+            f"&source={quote(source_id, safe='')}"
+        )
+        title = escape(f"来源 {number}：{source_id}", quote=True)
+        return (
+            f'<a class="source-citation" href="{href}" '
+            f'data-source-id="{source_id}" data-citation-number="{number}" '
+            f'title="{title}" aria-label="{title}"><sup>{number}</sup></a>'
+        )
+
+    def inline_code(match: re.Match[str]) -> str:
+        code = match.group(1)
+        rendered = _REPORT_CITATION.sub(citation_markup, code)
+        return rendered if rendered != code else match.group(0)
+
+    return _REPORT_CITATION.sub(
+        citation_markup,
+        _INLINE_CODE.sub(inline_code, markdown),
+    )
+
+
+def render_report_citations_for_latex(markdown: str) -> str:
+    """Replace internal evidence locators with compact printable references."""
+    citation_numbers: dict[str, int] = {}
+
+    def citation_markup(match: re.Match[str]) -> str:
+        source_id = match.group(1)
+        number = citation_numbers.setdefault(source_id, len(citation_numbers) + 1)
+        return f"<sup>[{number}]</sup>"
+
+    def inline_code(match: re.Match[str]) -> str:
+        code = match.group(1)
+        rendered = _REPORT_CITATION.sub(citation_markup, code)
+        return rendered if rendered != code else match.group(0)
+
+    return _REPORT_CITATION.sub(
+        citation_markup,
+        _INLINE_CODE.sub(inline_code, markdown),
+    )
+
+
+def abbreviate_internal_ids_for_pdf(markdown: str) -> str:
+    """Keep appendix identifiers traceable without forcing 32-char table cells."""
+    abbreviated = _EVIDENCE_ID.sub(lambda match: f"E-{match.group(1)[:8]}", markdown)
+    return _SOURCE_ID.sub(lambda match: f"S-{match.group(1)[:8]}", abbreviated)
 
 
 def normalize_markdown_for_pdf(markdown: str) -> str:
@@ -271,7 +340,13 @@ def _sanitize_html(html: str) -> str:
         "sup", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
     }
     attributes = {
-        "a": ["href", "title"],
+        "a": [
+            "href",
+            "title",
+            "aria-label",
+            "data-source-id",
+            "data-citation-number",
+        ],
         "img": ["src", "alt", "loading", "width", "height"],
         "td": ["colspan", "rowspan", "align"],
         "th": ["colspan", "rowspan", "align"],
@@ -301,6 +376,7 @@ def build_report_html(
     prepared = replace_chart_placeholders(
         _ensure_disclaimer(markdown), manifest, assets, target="html", project_id=project_id
     )
+    prepared = render_report_citations_for_html(prepared, project_id)
     proc = _run(
         [pandoc, "--from=gfm+raw_html", "--to=html5", "--wrap=none"],
         cwd=project_dir,
@@ -339,6 +415,8 @@ def build_report_latex(
             _ensure_disclaimer(markdown), manifest, assets, target="latex"
         )
     )
+    prepared = render_report_citations_for_latex(prepared)
+    prepared = abbreviate_internal_ids_for_pdf(prepared)
     prepared = re.sub(r"\A# [^\n]+\n+", "", prepared, count=1)
     source_path = project_dir / "05_final_report.render.md"
     source_path.write_text(prepared, encoding="utf-8")

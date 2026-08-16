@@ -40,7 +40,7 @@ async def test_run_agent_stops_repeated_tool_errors() -> None:
     async def broken_tool() -> str:
         raise ValueError("chunk not found in project")
 
-    with pytest.raises(AgentLoopStuckError, match="same error"):
+    with pytest.raises(AgentLoopStuckError, match="same error") as exc_info:
         await run_agent(
             user_prompt="test",
             options=AgentOptions(
@@ -53,6 +53,8 @@ async def test_run_agent_stops_repeated_tool_errors() -> None:
             llm_client=RepeatingToolClient(),
             tool_registry=registry,
         )
+
+    assert "chunk not found in project" in str(exc_info.value)
 
 
 class ScriptedClient:
@@ -162,6 +164,18 @@ def test_tracker_distinguishes_different_errors() -> None:
     # 两次都是错误但内容不同，未达任一错误的阈值
     with pytest.raises(AgentLoopStuckError):
         tracker.record("tool", "Error executing tool 'tool': invalid locator")
+
+
+def test_tracker_distinguishes_different_arguments() -> None:
+    """相同通用错误但参数不同，不应被误判为模型重复同一次失败调用。"""
+    tracker = _ToolErrorTracker(threshold=2)
+    failure = "Error executing tool 'tool': excerpt is not present"
+
+    tracker.record("tool", failure, '{"excerpt":"first"}')
+    tracker.record("tool", failure, '{"excerpt":"second"}')
+
+    with pytest.raises(AgentLoopStuckError, match="Last tool error:.*excerpt is not present"):
+        tracker.record("tool", failure, '{ "excerpt": "second" }')
 
 
 def test_tracker_scopes_reset_to_one_tool() -> None:

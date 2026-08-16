@@ -299,8 +299,8 @@ research-agent/
 | `LLM_TIMEOUT` | `120` | 请求超时（秒） |
 | `LLM_MAX_RETRIES` | `3` | 失败重试次数 |
 | `LLM_TEMPERATURE` | `0.7` | 生成温度 |
-| `SEARCH_API_PROVIDER` | `duckduckgo` | 搜索引擎（`duckduckgo` / `serpapi` / `tavily`） |
-| `SEARCH_API_KEY` | — | 搜索 API Key（`serpapi` / `tavily` 必填，DuckDuckGo 不需要） |
+| `SEARCH_API_PROVIDER` | `anysearch` | 搜索引擎（`anysearch` / `duckduckgo` / `serpapi` / `tavily`）；AnySearch 失败或无结果时自动降级到 DuckDuckGo |
+| `SEARCH_API_KEY` | — | AnySearch Key 可选；`serpapi` / `tavily` 必填；DuckDuckGo 不需要 |
 | `WEB_AUTH_TOKEN` | — | 网页工作台访问令牌。留空时只允许绑定回环地址；绑定 `0.0.0.0` 等公开地址必须设置 |
 | `STRATEGIST_MAX_ROUNDS` | `5` | Agent1 CLI 澄清对话轮次上限（Web 侧澄清问答上限固定 9 条） |
 | `MAX_COLLECT_ROUNDS` | `3` | Agent2↔3 采集-验证循环上限 |

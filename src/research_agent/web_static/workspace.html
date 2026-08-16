@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>项目工作区 · 溯光 Lumitrace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260728-layout" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260731-rerun" />
   </head>
   <body>
     <div class="app-shell">
@@ -55,6 +55,18 @@
 
           <div id="workspaceContent" class="workspace-grid hidden">
             <div class="workspace-stack">
+              <section id="rerunPanel" class="panel hidden">
+                <div class="panel-header"><h2>回退重跑</h2><span class="status-pill warning">保留旧版本</span></div>
+                <div class="panel-body">
+                  <p class="muted" style="margin-top:0">选择一个已到达的阶段重新运行。该阶段及之后的旧产物会先保存到项目备份中。</p>
+                  <div class="rerun-controls">
+                    <label><span>从哪个阶段开始</span><select id="rerunStage"></select></label>
+                    <button id="rerunBtn" class="button secondary" type="button">↶ 回退并运行</button>
+                  </div>
+                  <small id="rerunHint" class="field-help"></small>
+                </div>
+              </section>
+
               <section class="panel">
                 <div class="panel-header"><h2>Agent 执行时间线</h2><span id="roundBadge" class="status-pill">第 0 / 0 轮</span></div>
                 <div class="panel-body">
@@ -110,7 +122,7 @@
         </div>
       </main>
     </div>
-    <script src="/static/ui.js?v=20260728-layout"></script>
-    <script src="/static/app.js?v=20260728-layout"></script>
+  <script src="/static/ui.js?v=20260731-evidence-audit-2"></script>
+    <script src="/static/app.js?v=20260731-rerun"></script>
   </body>
 </html>

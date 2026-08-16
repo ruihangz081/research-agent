@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -29,11 +29,14 @@ from .orchestrator import (
     DeliveryBlockedError,
     PipelineError,
     ResearchPlanBlockedError,
+    RERUN_STAGE_LABELS,
     StrategistOutcome,
     _append_clarification,
     _assert_delivery_ready,
+    available_rerun_stages,
     checkpoint_for,
     migrate_research_plan,
+    prepare_stage_rerun,
     prepare_retry,
     recover_blocked_delivery,
     research_plan_migration_required,
@@ -166,6 +169,16 @@ class RetryRequest(BaseModel):
     extra_rounds: int = Field(default=1, ge=0, le=5)
 
 
+class RerunRequest(BaseModel):
+    stage: Literal[
+        "planning",
+        "sourcing",
+        "collecting_and_validating",
+        "analyzing",
+        "formatting",
+    ]
+
+
 class ClarificationRequest(BaseModel):
     answers: list[str] = Field(default_factory=list)
     skip: bool = False
@@ -188,7 +201,7 @@ class WorkspaceConfigRequest(BaseModel):
 
 
 class SearchConfigRequest(BaseModel):
-    provider: Literal["duckduckgo", "serpapi", "tavily"]
+    provider: Literal["anysearch", "duckduckgo", "serpapi", "tavily"]
     api_key: str | None = None
 
 
@@ -459,6 +472,7 @@ def _serialize_state(state: ProjectState) -> dict[str, Any]:
 
     failed = bool(state.failed_stage or state.last_error)
     blocked_reason = retry_blocked_reason(state)
+    rerun_stages = available_rerun_stages(state)
     return {
         "id": project_id,
         "topic": state.topic,
@@ -481,6 +495,11 @@ def _serialize_state(state: ProjectState) -> dict[str, Any]:
         "retry_count": state.retry_count,
         "can_retry": blocked_reason is None and not job["running"],
         "retry_blocked_reason": blocked_reason if failed else None,
+        "can_rerun": bool(rerun_stages) and not job["running"],
+        "rerun_stages": [
+            {"value": stage.value, "label": RERUN_STAGE_LABELS[stage]}
+            for stage in rerun_stages
+        ],
         "quality_gate": state.notes.get("quality_gate"),
         "quality_gate_reasons": state.notes.get("quality_gate_reasons", []),
         "research_plan": _research_plan_payload(state),
@@ -782,7 +801,7 @@ async def api_update_workspace_config(req: WorkspaceConfigRequest) -> dict[str, 
 
 @app.put("/api/config/search")
 async def api_update_search_config(req: SearchConfigRequest) -> dict[str, Any]:
-    """保存搜索 provider 与 Key。serpapi/tavily 必须提供 Key。"""
+    """保存搜索 provider 与 Key。AnySearch 的 Key 可选，serpapi/tavily 必填。"""
     needs_key = req.provider in {"serpapi", "tavily"}
     api_key = (req.api_key or "").strip()
     if needs_key and not api_key and not config.SEARCH_API_KEY:
@@ -965,6 +984,25 @@ async def api_retry(project_id: str, req: RetryRequest | None = None) -> dict[st
     return {"ok": True, "message": message, "project": _serialize_state(state)}
 
 
+@app.post("/api/projects/{project_id}/rerun")
+async def api_rerun(project_id: str, req: RerunRequest) -> dict[str, Any]:
+    """将项目回退到指定 Agent 阶段，备份旧产物后重新运行。"""
+    state = _load_state(project_id)
+    job = _job(project_id)
+    if job["running"]:
+        raise HTTPException(status_code=409, detail="项目正在运行，无法回退重跑")
+
+    try:
+        message = prepare_stage_rerun(state, Stage(req.stage))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    job["status"] = "idle"
+    _log(project_id, message)
+    _schedule(project_id)
+    return {"ok": True, "message": message, "project": _serialize_state(state)}
+
+
 @app.delete("/api/projects/{project_id}")
 async def api_delete_project(project_id: str) -> dict[str, Any]:
     """删除项目目录及其全部产物。运行中的项目不允许删除。"""
@@ -1031,7 +1069,12 @@ async def api_approval(project_id: str, req: ApprovalRequest) -> dict[str, Any]:
 
 
 @app.get("/api/projects/{project_id}/artifacts/{artifact_key}")
-async def api_artifact(project_id: str, artifact_key: str) -> dict[str, Any]:
+async def api_artifact(
+    project_id: str,
+    artifact_key: str,
+    response: Response,
+) -> dict[str, Any]:
+    response.headers.update(HTML_HEADERS)
     state = _load_state(project_id)
     for key, label, path in _artifact_paths(state):
         if key == artifact_key:

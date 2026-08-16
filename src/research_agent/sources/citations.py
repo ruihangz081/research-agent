@@ -24,9 +24,13 @@ class StandardCitation:
 
 def render_citation(evidence: EvidenceRecord, source: SourceAsset) -> str:
     locator = evidence.locator
-    details = []
+    details = [f"ev={evidence.evidence_id}", f"chunk={evidence.chunk_id}"]
     if locator.page_number:
         details.append(f"p.{locator.page_number}")
+    if locator.paragraph_index is not None:
+        details.append(f"paragraph={locator.paragraph_index}")
+    if locator.table_id:
+        details.append(f"table={locator.table_id}")
     if locator.sheet_name:
         details.append(f"sheet={locator.sheet_name}")
     if locator.cell_range:
@@ -35,7 +39,12 @@ def render_citation(evidence: EvidenceRecord, source: SourceAsset) -> str:
         details.append(f"cell=R{locator.row}C{locator.column}")
     if locator.slide_number:
         details.append(f"slide={locator.slide_number}")
-    suffix = ", ".join(details) or "locator"
+    if locator.char_start is not None:
+        char_end = "" if locator.char_end is None else locator.char_end
+        details.append(f"char={locator.char_start}-{char_end}")
+    if locator.zip_member:
+        details.append(f"member={locator.zip_member}")
+    suffix = ", ".join(details)
     return f"[src:{source.source_id}:v{evidence.source_version}, {suffix}]"
 
 
@@ -124,3 +133,30 @@ def audit_analysis_citations(
                 f"{reference}, {citation.locator}"
             )
     return errors
+
+
+_REPORT_CITATION = re.compile(r"\[src:[^\]\r\n]+\]", re.IGNORECASE)
+
+
+def validate_report_text_citations(
+    report: str,
+    evidence: list[EvidenceRecord],
+    source_lookup: dict[str, SourceAsset],
+) -> tuple[bool, list[str]]:
+    """Reject report citations that are not exact supported EvidenceRecords."""
+    valid, errors = validate_report_citations(evidence, source_lookup)
+    if not valid:
+        return False, errors
+
+    allowed = {
+        render_citation(item, source_lookup[item.source_id])
+        for item in evidence
+        if item.source_id in source_lookup
+    }
+    found = _REPORT_CITATION.findall(report)
+    if not found:
+        errors.append("report contains no evidence citations")
+    for marker in sorted(set(found)):
+        if marker not in allowed:
+            errors.append(f"citation is not an exact supported EvidenceRecord: {marker}")
+    return not errors, errors

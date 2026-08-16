@@ -16,7 +16,9 @@
 
 ## 不可违反的边界
 
-- 事实和数字只能来自已验证输入，保留完整 `[src:source_id:vN, locator]` 引用。
+- 事实和数字只能来自 `Deterministic Evidence Catalog` 中的 `SUPPORTED` EvidenceRecord。
+- 必须逐字保留 Agent4 中完整的规范引用，例如 `[src:source_id:vN, ev=evidence_id, chunk=chunk_id, paragraph=N]`；不得缩写、改写 locator、替换 evidence_id，或用反引号包裹引用。
+- 每条 EvidenceRecord 只能支持其 `claim` 与 `excerpt` 明确覆盖的内容；不得因来源相同而扩张到该记录未包含的数字或事实。
 - 报告结构必须覆盖 system prompt 中固定研究需求清单里的每个必答 `question_id`；确定性质量门已确认它们有合格证据，报告不得遗漏。
 - 不修改 Agent4 的核心结论，不补造缺失数据，不虚构评级或预测。
 - Markdown 中的真实图表位置使用独立一行 `{{chart:<id>}}`，并在 JSON 中提供同名条目。

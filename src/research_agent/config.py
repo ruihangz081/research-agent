@@ -20,7 +20,7 @@ LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 DEFAULT_MODEL: str = LLM_MODEL
 
 # === Web Search 配置（可选）===
-SEARCH_API_PROVIDER: str = os.getenv("SEARCH_API_PROVIDER", "duckduckgo")
+SEARCH_API_PROVIDER: str = os.getenv("SEARCH_API_PROVIDER", "anysearch")
 SEARCH_API_KEY: str = os.getenv("SEARCH_API_KEY", "")
 
 # === 本地网页工作台访问控制 ===

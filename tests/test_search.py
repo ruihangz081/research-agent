@@ -58,7 +58,8 @@ def test_evidence_requires_exact_excerpt_and_version(tmp_path: Path) -> None:
     try:
         service.record_evidence(evidence)
     except ValueError as exc:
-        assert "excerpt" in str(exc)
+        assert result.chunk.chunk_id in str(exc)
+        assert "ReadProjectSource.text" in str(exc)
     else:
         raise AssertionError("invented evidence was accepted")
     repository.close()

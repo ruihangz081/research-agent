@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from research_agent.sources import LocalObjectStore, SQLiteRepository, SourceService
-from research_agent.sources.citations import render_citation, validate_report_citations
+from research_agent.sources.citations import (
+    render_citation,
+    validate_report_citations,
+    validate_report_text_citations,
+)
 from research_agent.sources.enums import LocatorType, VerificationStatus
 from research_agent.sources.models import EvidenceRecord, SourceLocator
 from research_agent.sources.operations import backup_source_data, export_project, rebuild_project_indexes, verify_consistency
@@ -65,6 +69,33 @@ def test_citations_and_export_are_traceable(tmp_path: Path) -> None:
     assert output.exists()
     assert '"ev"' in output.read_text()
     assert verify_consistency(repository, service.object_store, "project")["ok"] is True
+    repository.close()
+
+
+def test_report_text_only_accepts_exact_evidence_citations(tmp_path: Path) -> None:
+    repository, service, source, evidence = setup_project(tmp_path)
+    source_lookup = {source.source_id: source}
+    citation = render_citation(evidence, source)
+
+    assert f"ev={evidence.evidence_id}" in citation
+    assert f"chunk={evidence.chunk_id}" in citation
+    assert validate_report_text_citations(
+        f"Revenue was 42 million {citation}", [evidence], source_lookup
+    ) == (True, [])
+
+    valid, errors = validate_report_text_citations(
+        f"Revenue was 42 million [src:{source.source_id}:v1, 财报摘要]",
+        [evidence],
+        source_lookup,
+    )
+    assert valid is False
+    assert "not an exact supported EvidenceRecord" in errors[0]
+
+    valid, errors = validate_report_text_citations(
+        "Revenue was 42 million", [evidence], source_lookup
+    )
+    assert valid is False
+    assert errors == ["report contains no evidence citations"]
     repository.close()
 
 

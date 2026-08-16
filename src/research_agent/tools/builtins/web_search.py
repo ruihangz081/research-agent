@@ -2,7 +2,8 @@
 
 Provider 由 `SEARCH_API_PROVIDER` 决定：
 
-- `duckduckgo`（默认，无需 Key）：优先用 ddgs/duckduckgo-search 库，失败回落 HTML 接口
+- `anysearch`（默认，Key 可选）：失败或无结果时自动降级到 DuckDuckGo
+- `duckduckgo`（无需 Key）：优先用 ddgs/duckduckgo-search 库，失败回落 HTML 接口
 - `serpapi`：需要 `SEARCH_API_KEY`
 - `tavily`：需要 `SEARCH_API_KEY`
 
@@ -22,12 +23,13 @@ from ..registry import default_registry
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 20.0
+_ANYSEARCH_URL = "https://api.anysearch.com/v1/search"
 _KEYED_PROVIDERS = {"serpapi", "tavily"}
-SUPPORTED_PROVIDERS = {"duckduckgo", *_KEYED_PROVIDERS}
+SUPPORTED_PROVIDERS = {"anysearch", "duckduckgo", *_KEYED_PROVIDERS}
 
 
 def _active_provider() -> str:
-    return (config.SEARCH_API_PROVIDER or "duckduckgo").strip().lower()
+    return (config.SEARCH_API_PROVIDER or "anysearch").strip().lower()
 
 
 def _format_results(results: list[dict[str, str]], query: str) -> str:
@@ -65,6 +67,16 @@ async def web_search(query: str, num_results: int = 5) -> str:
             "Set the key in settings, or switch the provider to 'duckduckgo'."
         )
 
+    if provider == "anysearch":
+        try:
+            results = await _search_anysearch(query, num_results)
+            if not results:
+                raise LookupError("AnySearch returned no usable results")
+            return _format_results(results, query)
+        except Exception as exc:
+            logger.warning("AnySearch failed, falling back to DuckDuckGo: %s", exc)
+            return await _search_duckduckgo_with_fallback(query, num_results)
+
     try:
         if provider == "serpapi":
             results = await _search_serpapi(query, num_results)
@@ -80,6 +92,49 @@ async def web_search(query: str, num_results: int = 5) -> str:
         return f"Error: {provider} search failed: {exc}"
 
     return _format_results(results, query)
+
+
+# ═══════════════════════════════════════════════════════════════
+# AnySearch（Key 可选，失败降级到 DuckDuckGo）
+# ═══════════════════════════════════════════════════════════════
+
+
+async def _search_anysearch(query: str, num_results: int) -> list[dict[str, str]]:
+    headers = {"User-Agent": "research-agent/0.1"}
+    if config.SEARCH_API_KEY:
+        headers["Authorization"] = f"Bearer {config.SEARCH_API_KEY}"
+
+    limit = max(1, min(num_results, 20))
+    async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
+        response = await client.post(
+            _ANYSEARCH_URL,
+            json={
+                "query": query,
+                "max_results": limit,
+                "format": "json",
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+    if payload.get("code") != 0:
+        raise RuntimeError(payload.get("message") or "AnySearch returned an error")
+
+    results = []
+    for item in (payload.get("data", {}).get("results") or [])[:limit]:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url:
+            continue
+        results.append(
+            {
+                "title": str(item.get("title") or url).strip(),
+                "url": url,
+                "snippet": str(item.get("snippet") or "").strip(),
+            }
+        )
+    return results
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -164,7 +219,7 @@ async def _search_duckduckgo_with_fallback(query: str, num_results: int) -> str:
         logger.warning("DuckDuckGo HTML search failed: %s", exc)
 
     return (
-        "Error: Web search is not available. Install 'ddgs' "
+        "Error: AnySearch and DuckDuckGo are unavailable. Install 'ddgs' "
         "(pip install ddgs), or configure SEARCH_API_PROVIDER=serpapi|tavily "
         "with SEARCH_API_KEY."
     )

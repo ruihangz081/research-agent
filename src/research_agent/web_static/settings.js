@@ -7,16 +7,19 @@ function value(id, content) { $(id).value = content ?? ""; }
 
 function renderSearchKeyState() {
   const provider = $("searchProvider").value;
-  const needsKey = provider !== "duckduckgo";
-  $("searchKey").disabled = !needsKey;
+  const acceptsKey = provider !== "duckduckgo";
+  const needsKey = ["serpapi", "tavily"].includes(provider);
+  $("searchKey").disabled = !acceptsKey;
   $("searchKeyHelp").textContent = needsKey
     ? `${provider} 需要 API Key；未配置时搜索会直接报错而不静默降级。`
-    : "DuckDuckGo 无需 Key。";
+    : provider === "anysearch"
+      ? "AnySearch API Key 可选；未配置时使用匿名额度，失败时降级到 DuckDuckGo。"
+      : "DuckDuckGo 无需 Key。";
 }
 
 function renderStatus() {
   if (!config) return;
-  $("configStatus").innerHTML = `<div class="detail-row"><span>模型 API</span><strong><i class="status-dot ${config.has_api_key ? "success" : "warning"}"></i> ${config.has_api_key ? "已配置" : "缺少 Key"}</strong></div><div class="detail-row"><span>搜索服务</span><strong><i class="status-dot success"></i> ${Lumitrace.escapeHtml(config.search_provider || "duckduckgo")}</strong></div><div class="detail-row"><span>语义检索</span><strong><i class="status-dot ${config.embedding_model ? "success" : "neutral"}"></i> ${config.embedding_model ? "已启用" : "未启用"}</strong></div>`;
+  $("configStatus").innerHTML = `<div class="detail-row"><span>模型 API</span><strong><i class="status-dot ${config.has_api_key ? "success" : "warning"}"></i> ${config.has_api_key ? "已配置" : "缺少 Key"}</strong></div><div class="detail-row"><span>搜索服务</span><strong><i class="status-dot success"></i> ${Lumitrace.escapeHtml(config.search_provider || "anysearch")}</strong></div><div class="detail-row"><span>语义检索</span><strong><i class="status-dot ${config.embedding_model ? "success" : "neutral"}"></i> ${config.embedding_model ? "已启用" : "未启用"}</strong></div>`;
 }
 
 function populateConfig() {
@@ -27,7 +30,7 @@ function populateConfig() {
   value("timeout", config.timeout ?? 120);
   value("retries", config.max_retries ?? 3);
   value("temperature", config.temperature ?? 0.7);
-  value("searchProvider", config.search_provider || "duckduckgo");
+  value("searchProvider", config.search_provider || "anysearch");
   $("searchKey").value = "";
   $("searchKey").placeholder = config.has_search_api_key ? "已配置；留空则保留当前 Key" : "请输入搜索 API Key";
   renderSearchKeyState();
@@ -137,7 +140,7 @@ async function saveSearchConfig() {
   try {
     const provider = $("searchProvider").value;
     const apiKey = $("searchKey").value.trim();
-    if (provider !== "duckduckgo" && !apiKey && !config?.has_search_api_key) {
+    if (["serpapi", "tavily"].includes(provider) && !apiKey && !config?.has_search_api_key) {
       throw new Error(`${provider} 需要搜索 API Key`);
     }
     Lumitrace.setButtonBusy(button, true, "保存中");
@@ -174,7 +177,7 @@ $("saveSearch").addEventListener("click", saveSearchConfig);
 $("testSearch").addEventListener("click", testSearch);
 $("searchProvider").addEventListener("change", renderSearchKeyState);
 $("copyEnv").addEventListener("click", async () => {
-  const template = `LLM_BASE_URL=${config?.base_url || "https://api.openai.com/v1"}\nLLM_API_KEY=\nLLM_MODEL=${config?.model || "gpt-4o"}\nLLM_TIMEOUT=${config?.timeout || 120}\nLLM_MAX_RETRIES=${config?.max_retries || 3}\nLLM_TEMPERATURE=${config?.temperature ?? 0.7}\nSEARCH_API_PROVIDER=${config?.search_provider || "duckduckgo"}\nSEARCH_API_KEY=\nSOURCE_EMBEDDING_BASE_URL=\nSOURCE_EMBEDDING_API_KEY=\nSOURCE_EMBEDDING_MODEL=\nMAX_COLLECT_ROUNDS=${config?.default_rounds || 3}\nOUTPUT_PREFERENCE=${config?.output_preference || "balanced"}\nPROJECTS_DIR=${config?.projects_dir || ""}\nSOURCE_DATA_DIR=${config?.source_data_dir || ""}`;
+  const template = `LLM_BASE_URL=${config?.base_url || "https://api.openai.com/v1"}\nLLM_API_KEY=\nLLM_MODEL=${config?.model || "gpt-4o"}\nLLM_TIMEOUT=${config?.timeout || 120}\nLLM_MAX_RETRIES=${config?.max_retries || 3}\nLLM_TEMPERATURE=${config?.temperature ?? 0.7}\nSEARCH_API_PROVIDER=${config?.search_provider || "anysearch"}\nSEARCH_API_KEY=\nSOURCE_EMBEDDING_BASE_URL=\nSOURCE_EMBEDDING_API_KEY=\nSOURCE_EMBEDDING_MODEL=\nMAX_COLLECT_ROUNDS=${config?.default_rounds || 3}\nOUTPUT_PREFERENCE=${config?.output_preference || "balanced"}\nPROJECTS_DIR=${config?.projects_dir || ""}\nSOURCE_DATA_DIR=${config?.source_data_dir || ""}`;
   try { await navigator.clipboard.writeText(template); Lumitrace.toast("配置模板已复制"); }
   catch (_) { Lumitrace.toast("浏览器不允许复制，请直接编辑项目中的 .env", "warning"); }
 });

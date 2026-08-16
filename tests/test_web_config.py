@@ -371,6 +371,75 @@ async def test_retry_rejected_for_healthy_project(
 
 
 @pytest.mark.anyio
+async def test_completed_project_can_rerun_from_selected_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    web_app.JOBS.clear()
+    web_app.LOCKS.clear()
+    state = ProjectState(topic="completed-rerun", date_str="20260731", stage=Stage.DONE)
+    state.save()
+    outline = state.project_dir / config.FILE_OUTLINE
+    sources_final = state.project_dir / config.FILE_SOURCES_FINAL
+    analysis = state.project_dir / config.FILE_ANALYSIS
+    final_report = state.project_dir / config.FILE_FINAL_REPORT
+    for path in (outline, sources_final, analysis, final_report):
+        path.write_text(path.name, encoding="utf-8")
+    state.outline_path = str(outline)
+    state.sources_final_path = str(sources_final)
+    state.analysis_path = str(analysis)
+    state.final_report_path = str(final_report)
+    state.save()
+    project_id = state.project_dir.name
+
+    scheduled: list[str] = []
+    monkeypatch.setattr(web_app, "_schedule", lambda value: scheduled.append(value))
+    transport = httpx.ASGITransport(app=web_app.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        before = await client.get(f"/api/projects/{project_id}")
+        response = await client.post(
+            f"/api/projects/{project_id}/rerun",
+            json={"stage": "analyzing"},
+        )
+
+    assert before.json()["can_rerun"] is True
+    assert [item["value"] for item in before.json()["rerun_stages"]] == [
+        "planning",
+        "sourcing",
+        "collecting_and_validating",
+        "analyzing",
+        "formatting",
+    ]
+    assert response.status_code == 200
+    assert response.json()["project"]["stage"] == "analyzing"
+    assert scheduled == [project_id]
+    assert ProjectState.load(state.project_dir).stage == Stage.ANALYZING
+
+
+@pytest.mark.anyio
+async def test_running_project_cannot_be_rerun(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    web_app.JOBS.clear()
+    web_app.LOCKS.clear()
+    state = ProjectState(topic="running-rerun", date_str="20260731", stage=Stage.DONE)
+    state.save()
+    web_app._job(state.project_dir.name)["running"] = True
+
+    transport = httpx.ASGITransport(app=web_app.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/projects/{state.project_dir.name}/rerun",
+            json={"stage": "planning"},
+        )
+
+    assert response.status_code == 409
+
+
+@pytest.mark.anyio
 async def test_failed_project_can_be_deleted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -864,6 +933,31 @@ async def test_search_config_can_be_saved(
 
 
 @pytest.mark.anyio
+async def test_anysearch_config_can_be_saved_without_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(web_app, "ENV_PATH", env_path)
+    monkeypatch.setattr(config, "SEARCH_API_PROVIDER", "duckduckgo")
+    monkeypatch.setattr(config, "SEARCH_API_KEY", "")
+
+    transport = httpx.ASGITransport(app=web_app.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.put(
+            "/api/config/search",
+            json={"provider": "anysearch"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["search_provider"] == "anysearch"
+    assert payload["has_search_api_key"] is False
+    assert payload["search_key_required"] is False
+    assert "SEARCH_API_PROVIDER=anysearch" in env_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.anyio
 async def test_search_config_rejects_keyed_provider_without_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -932,7 +1026,12 @@ async def test_config_exposes_supported_search_providers() -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         payload = (await client.get("/api/config")).json()
 
-    assert payload["search_providers"] == ["duckduckgo", "serpapi", "tavily"]
+    assert payload["search_providers"] == [
+        "anysearch",
+        "duckduckgo",
+        "serpapi",
+        "tavily",
+    ]
 
 
 @pytest.mark.anyio

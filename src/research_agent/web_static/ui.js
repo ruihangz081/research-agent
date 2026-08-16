@@ -125,8 +125,17 @@ const Lumitrace = (() => {
     const source = String(text).replace(/\r\n?/g, "\n");
     const lines = source.split("\n");
     const blocks = [];
+    const citationNumbers = new Map();
     let paragraph = [];
     let list = null;
+
+    const citationMarkup = (sourceId) => {
+      if (!citationNumbers.has(sourceId)) citationNumbers.set(sourceId, citationNumbers.size + 1);
+      const number = citationNumbers.get(sourceId);
+      const projectId = selectedProject();
+      const href = `/materials?project=${encodeURIComponent(projectId)}&source=${encodeURIComponent(sourceId)}`;
+      return `<a class="source-citation" href="${href}" data-source-id="${sourceId}" data-citation-number="${number}" title="来源 ${sourceId}" aria-label="查看来源 ${number}：${sourceId}"><sup>${number}</sup></a>`;
+    };
 
     const inline = (value) => {
       let marker = "LUMITRACE_MARKDOWN_TOKEN";
@@ -135,7 +144,14 @@ const Lumitrace = (() => {
       const stash = (html) => `${marker}${tokens.push(html) - 1}${marker}`;
       const safeUrl = (url) => /^(?:https?:\/\/|mailto:|\/|#)/i.test(url) ? url : "#";
       let output = escapeHtml(value);
-      output = output.replace(/`([^`]+)`/g, (_, code) => stash(`<code>${code}</code>`));
+      output = output.replace(/`([^`]+)`/g, (_, code) => {
+        const withCitations = code.replace(
+          /\[src:\s*(src_[A-Za-z0-9_-]+)(?::v\d+)?(?:\s*,[^\]]*)?\]/gi,
+          (_citation, sourceId) => citationMarkup(sourceId),
+        );
+        return stash(withCitations === code ? `<code>${code}</code>` : withCitations);
+      });
+      output = output.replace(/\[src:\s*(src_[A-Za-z0-9_-]+)(?::v\d+)?(?:\s*,[^\]]*)?\]/gi, (_, sourceId) => stash(citationMarkup(sourceId)));
       output = output.replace(/!\[([^\]]*)\]\(([^\s)]+)(?:\s+&quot;([^&]*)&quot;)?\)/g, (_, alt, url, title) => {
         const href = safeUrl(url);
         const titleAttr = title ? ` title="${title}"` : "";
@@ -271,6 +287,25 @@ const Lumitrace = (() => {
     return `<div class="markdown">${blocks.join("")}</div>`;
   }
 
+  async function hydrateSourceCitations(root, projectId = selectedProject()) {
+    const citations = [...(root?.querySelectorAll?.(".source-citation[data-source-id]") || [])];
+    if (!citations.length || !projectId) return;
+    try {
+      const data = await api(`/api/projects/${encodeURIComponent(projectId)}/sources?include_superseded=true`);
+      const sources = new Map((data.items || []).map((item) => [item.source_id, item]));
+      citations.forEach((citation) => {
+        const source = sources.get(citation.dataset.sourceId);
+        if (!source) return;
+        const number = citation.dataset.citationNumber;
+        const title = source.title || source.original_filename || source.source_id;
+        citation.title = `来源 ${number}：${title}\n${source.source_id} · v${source.version}`;
+        citation.setAttribute("aria-label", `查看来源 ${number}：${title}`);
+      });
+    } catch (_) {
+      // 来源标题加载失败时保留可点击编号和原始 source_id 提示。
+    }
+  }
+
   function stageLabel(stage) {
     return stageLabels[stage] || stage || "未知阶段";
   }
@@ -365,6 +400,7 @@ const Lumitrace = (() => {
     mountShell,
     rememberProject,
     renderMarkdown,
+    hydrateSourceCitations,
     selectedProject,
     setButtonBusy,
     sourceStatus,

@@ -40,10 +40,10 @@ class _ToolErrorTracker:
 
     def __init__(self, threshold: int) -> None:
         self.threshold = threshold
-        self._counts: dict[tuple[str, str], int] = {}
+        self._counts: dict[tuple[str, str, str], int] = {}
 
-    def record(self, tool_name: str, result: str) -> None:
-        """登记一次工具结果；同一错误达到阈值时抛出 AgentLoopStuckError。"""
+    def record(self, tool_name: str, result: str, arguments: str = "") -> None:
+        """登记一次工具结果；相同参数的同一错误达到阈值时停止。"""
         if not result.startswith("Error executing tool '"):
             # 该工具本轮成功，清掉它此前累积的错误计数
             self._counts = {
@@ -51,12 +51,23 @@ class _ToolErrorTracker:
             }
             return
 
-        key = (tool_name, result)
+        try:
+            normalized_arguments = json.dumps(
+                json.loads(arguments or "{}"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (json.JSONDecodeError, TypeError):
+            normalized_arguments = arguments
+
+        key = (tool_name, normalized_arguments, result)
         self._counts[key] = self._counts.get(key, 0) + 1
         if self._counts[key] >= self.threshold:
             raise AgentLoopStuckError(
                 f"tool {tool_name!r} returned the same error "
-                f"{self._counts[key]} times; agent execution stopped"
+                f"{self._counts[key]} times for identical arguments; "
+                f"agent execution stopped. Last tool error: {result}"
             )
 
 
@@ -70,7 +81,7 @@ async def _run_tool_calls(
     """执行本轮全部 tool_call，把结果作为 tool 消息追加进历史。"""
     for tc in response.tool_calls or []:
         result = await _execute_tool_call(tc, tool_registry, cwd)
-        tracker.record(tc.function.name, result)
+        tracker.record(tc.function.name, result, tc.function.arguments)
         messages.append(
             ChatMessage(
                 role="tool",

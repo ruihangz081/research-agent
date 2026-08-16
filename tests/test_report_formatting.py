@@ -10,6 +10,7 @@ from research_agent import web_app
 from research_agent.report_charts import load_chart_manifest, render_chart_manifest
 from research_agent.report_formatting import (
     _layout_problems,
+    abbreviate_internal_ids_for_pdf,
     build_report_html,
     build_report_latex,
     find_latex_engine,
@@ -18,10 +19,25 @@ from research_agent.report_formatting import (
     make_latex_long_tokens_breakable,
     make_latex_source_ids_breakable,
     normalize_markdown_for_pdf,
+    render_report_citations_for_html,
+    render_report_citations_for_latex,
     replace_chart_placeholders,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "brokerage_report"
+
+
+def test_latex_engine_keeps_xelatex_symlink_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = tmp_path / "xetex"
+    engine.write_text("", encoding="utf-8")
+    xelatex = tmp_path / "xelatex"
+    xelatex.symlink_to(engine)
+    monkeypatch.setattr(config, "REPORT_LATEX_ENGINE", str(xelatex))
+
+    assert find_latex_engine() == str(xelatex.absolute())
 
 
 def test_pdf_normalization_replaces_unsupported_ratings_and_breaks_source_ids() -> None:
@@ -30,6 +46,45 @@ def test_pdf_normalization_replaces_unsupported_ratings_and_breaks_source_ids() 
     rendered = make_latex_source_ids_breakable(source_id)
     assert rendered.replace(r"\allowbreak{}", "") == source_id
     assert rendered.count(r"\allowbreak{}") == 3
+
+
+def test_html_citations_render_inside_mixed_inline_code() -> None:
+    source_id = "src_1234567890abcdef1234567890abcdef"
+    markdown = f"`[推导｜依据如下] [src:{source_id}:v2, End Market Summary]`"
+
+    rendered = render_report_citations_for_html(markdown, "示例项目")
+
+    assert "<code>" not in rendered
+    assert "End Market Summary" not in rendered
+    assert 'class="source-citation"' in rendered
+    assert f'data-source-id="{source_id}"' in rendered
+    assert "project=%E7%A4%BA%E4%BE%8B%E9%A1%B9%E7%9B%AE" in rendered
+
+
+def test_latex_citations_render_as_compact_numbered_references() -> None:
+    first = "src_1234567890abcdef1234567890abcdef"
+    second = "src_abcdef1234567890abcdef1234567890"
+    markdown = (
+        f"`[事实] [src:{first}:v2, ev=ev_1, chunk=chk_1, paragraph=3]` "
+        f"[src:{first}:v2, ev=ev_2] [src:{second}:v1, ev=ev_3]"
+    )
+
+    rendered = render_report_citations_for_latex(markdown)
+
+    assert rendered == (
+        "[事实] <sup>[1]</sup> "
+        "<sup>[1]</sup> <sup>[2]</sup>"
+    )
+    assert "src:" not in rendered
+
+
+def test_pdf_appendix_internal_ids_are_abbreviated() -> None:
+    markdown = (
+        "ev_1234567890abcdef1234567890abcdef "
+        "src_abcdef1234567890abcdef1234567890"
+    )
+
+    assert abbreviate_internal_ids_for_pdf(markdown) == "E-12345678 S-abcdef12"
 
 
 def _copy_fixture(tmp_path: Path) -> tuple[Path, Path]:
