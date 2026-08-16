@@ -15,6 +15,7 @@ from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
 from ..research_plan import plan_prompt_context
+from ..sources.tasks import load_tasks_file, config_tasks_path, tasks_prompt_context
 from ..tools import default_registry
 from .source_context import source_context
 
@@ -194,6 +195,9 @@ async def run_collection_round(
         f"- 本轮输出路径：`{round_output}`\n"
         f"- 研究需求清单：`{state.project_dir / config.FILE_RESEARCH_REQUIREMENTS}`\n"
     )
+    # R3：注入结构化补研任务，取代 Agent2 从自由文本 gap 中重新理解缺口
+    previous_tasks = load_tasks_file(config_tasks_path(state.project_dir))
+    system_prompt += tasks_prompt_context(previous_tasks)
 
     options = AgentOptions(
         system_prompt=system_prompt,

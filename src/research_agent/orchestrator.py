@@ -37,6 +37,7 @@ from .research_plan import ResearchPlanError
 from .sources.citations import audit_analysis_citations
 from .sources.claims import ClaimsError, load_claims_file, validate_claims
 from .sources.runtime import get_service
+from .sources.tasks import blocking_pending_tasks, config_tasks_path, load_tasks_file
 from .state import ProjectState, Stage
 
 console = Console()
@@ -224,15 +225,38 @@ def _deterministic_convergence(state: ProjectState, feedback: validator.Validati
         reasons.append(f"unresolved feedback conflicts: {', '.join(unresolved_conflicts)}")
     if not feedback.converged:
         reasons.append("validator did not declare convergence")
+    # R3：结构化补研任务门禁。存在 critical 且 pending 的任务时，即使模型
+    # 声明 converged=true 也不能收敛——补研任务的完成是确定性门禁的一部分，
+    # 与模型收敛声明无关。
+    try:
+        tasks = load_tasks_file(config_tasks_path(state.project_dir))
+    except Exception as exc:  # 任务台账损坏时按阻断处理，绝不静默放行
+        state.notes["quality_gate"] = "blocked"
+        state.notes["quality_gate_reasons"] = [f"任务台账损坏：{exc}"]
+        state.save()
+        return False
+    blocking = blocking_pending_tasks(tasks)
+    if blocking:
+        reasons.append(
+            "critical 补研任务未完成："
+            + ", ".join(item.task_id for item in blocking)
+        )
+
     # The validator may retain known, non-material limitations (for example a
     # paywalled industry report) in gap_list while still declaring convergence.
     # Keep those limitations visible, but do not turn every residual gap into a
     # hard stop. Persisted evidence and unresolved conflicts remain deterministic
     # blockers; the validator is responsible for deciding whether a gap is major.
-    ready = feedback.converged and not unresolved_conflicts and gate.passed
+    ready = (
+        feedback.converged
+        and not unresolved_conflicts
+        and gate.passed
+        and not blocking
+    )
     state.notes["quality_gate"] = gate.status.value
     state.notes["quality_gate_reasons"] = sorted(set(reasons))
     state.notes["research_question_coverage"] = gate.coverage
+    state.notes["pending_critical_tasks"] = [item.task_id for item in blocking]
     return ready
 
 

@@ -263,6 +263,65 @@ class ClaimsFile(BaseModel):
         return self
 
 
+class ResearchTask(BaseModel):
+    """Agent3 产出的结构化补研任务（R3）。
+
+    与自由文本 gap 不同，任务有稳定 task_id 与持久化状态，Agent2 逐条执行，
+    Agent3 验收回填，Orchestrator 用确定性门禁阻断未完成的 critical 任务。
+    """
+
+    task_id: str
+    question_id: str
+    description: str = Field(min_length=1)
+    priority: Literal["critical", "normal"] = "normal"
+    status: Literal["pending", "completed", "blocked", "waived"] = "pending"
+    completed_evidence_ids: list[str] = Field(default_factory=list)
+    created_round: int = Field(ge=1)
+    completed_round: int | None = None
+    blocked_reason: str | None = None
+
+    @field_validator("task_id", "question_id")
+    @classmethod
+    def _identifier_is_present(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("task_id 与 question_id 不能为空")
+        return cleaned
+
+    @field_validator("description")
+    @classmethod
+    def _description_is_present(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("任务描述不能为空")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _completed_task_records_evidence(self) -> "ResearchTask":
+        if self.status == "completed" and not self.completed_evidence_ids:
+            raise ValueError("completed 任务必须回填至少一条 completed_evidence_ids")
+        return self
+
+
+class ResearchTasksFile(BaseModel):
+    """`03_tasks.json`：补研任务台账的顶层容器。"""
+
+    schema_version: Literal["1.0"] = "1.0"
+    tasks: list[ResearchTask] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _task_ids_are_unique(self) -> "ResearchTasksFile":
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for item in self.tasks:
+            if item.task_id in seen:
+                duplicates.append(item.task_id)
+            seen.add(item.task_id)
+        if duplicates:
+            raise ValueError(f"task_id 重复：{', '.join(sorted(set(duplicates)))}")
+        return self
+
+
 class Job(BaseModel):
     job_id: str
     project_id: str

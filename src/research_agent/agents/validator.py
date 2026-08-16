@@ -8,13 +8,15 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from rich.console import Console
 
 from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
 from ..research_plan import plan_prompt_context
+from ..sources.models import ResearchTask
+from ..sources.tasks import load_tasks_file, write_tasks_file, config_tasks_path
 from ..tools import default_registry
 from .source_context import source_context
 
@@ -52,12 +54,46 @@ class ValidationFeedback(BaseModel):
     need_rework_topics: list[str] = []
     conflicts: list[ConflictItem] = []
     next_round_focus: list[str] = []
+    # R3：结构化补研任务（每轮重写完整清单，含历史任务的最新状态）
+    tasks: list[ResearchTask] = Field(default_factory=list)
 
 
 def load_feedback(path: Path) -> ValidationFeedback:
     """从磁盘读取并校验反馈 JSON。"""
     data = json.loads(path.read_text(encoding="utf-8"))
     return ValidationFeedback(**data)
+
+
+def _previous_tasks_context(previous_tasks, round_idx: int) -> str:
+    """把上一轮的任务台账注入 prompt，供 Agent3 验收并重写。
+
+    上一轮没有任务文件时返回空串（首轮或旧项目）。有历史任务时，Agent3 必须
+    逐条验收：已补齐的标 completed（回填 evidence_id），未补齐的保持 pending
+    或标 blocked，然后连同新任务一起输出为完整清单。
+    """
+    if not previous_tasks.tasks:
+        return ""
+    lines = [
+        "\n\n## 上一轮的结构化补研任务（必须验收并更新状态）",
+        f"这是第 {round_idx - 1} 轮留下的任务台账，请逐条验收：",
+        "",
+        "| task_id | question_id | 优先级 | 描述 | 状态 |",
+        "|---|---|---|---|---|",
+    ]
+    for item in previous_tasks.tasks:
+        lines.append(
+            f"| `{item.task_id}` | `{item.question_id}` | {item.priority} "
+            f"| {item.description} | {item.status} |"
+        )
+    lines += [
+        "",
+        "验收规则：",
+        "- 本轮已补齐该任务要求的证据 → 状态改 `completed`，并在 `completed_evidence_ids` 回填证据 ID",
+        "- 本轮仍无法补齐 → 保持 `pending`（继续下轮）或改 `blocked` 并在 `blocked_reason` 写明原因",
+        "- 任务已不再需要 → 改 `waived`",
+        "- 最终输出的 `tasks` 必须是**完整清单**（含历史任务的最新状态 + 本轮新任务），不要只输出本轮新增的。",
+    ]
+    return "\n".join(lines) + "\n"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -108,6 +144,9 @@ async def run_validation(
         else "（首轮，无历史反馈）"
     )
 
+    tasks_path = config_tasks_path(state.project_dir)
+    previous_tasks = load_tasks_file(tasks_path)
+
     system_prompt = _load_validator_prompt()
     system_prompt += plan_prompt_context(state)
     system_prompt += source_context(state)
@@ -119,10 +158,12 @@ async def run_validation(
         "{previous_feedback}": previous_feedback_str,
         "{feedback_path}": str(feedback_path),
         "{validation_report_path}": str(validation_report_path),
+        "{tasks_path}": str(tasks_path),
         "{N}": str(round_idx),
     }
     for k, v in replacements.items():
         system_prompt = system_prompt.replace(k, v)
+    system_prompt += _previous_tasks_context(previous_tasks, round_idx)
 
     system_prompt += (
         f"\n\n## 当前项目参数\n"
@@ -185,11 +226,16 @@ async def run_validation(
     if feedback.round != round_idx:
         feedback.round = round_idx
 
+    # R3：每轮重写任务台账（Agent3 输出的 tasks 是合并历史后的完整清单）。
+    from ..sources.models import ResearchTasksFile
+
+    write_tasks_file(tasks_path, ResearchTasksFile(tasks=feedback.tasks))
+
     console.print(
         f"\n[green]✓ 第 {round_idx} 轮验证完成 | converged="
         f"{'[bold]true[/bold]' if feedback.converged else 'false'} | "
         f"drop={len(feedback.drop_sources)}, gap={len(feedback.gap_list)}, "
-        f"conflicts={len(feedback.conflicts)}[/green]"
+        f"conflicts={len(feedback.conflicts)}, tasks={len(feedback.tasks)}[/green]"
     )
     return feedback_path, feedback
 

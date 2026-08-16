@@ -31,6 +31,15 @@
 
 你必须在本轮输出中针对 `gap_list`/`need_rework_topics`/`conflicts` 逐项作出回应。
 
+## 结构化补研任务消费规则（当 system prompt 含任务表时）
+
+system prompt 可能注入「结构化补研任务」表（来自 `03_tasks.json`），每条任务有稳定 `task_id`。规则：
+
+1. **逐条执行**：对每条 `pending` 任务，采集它描述的证据；`critical` 任务优先级最高，必须优先完成。
+2. **逐条回应**：在本轮输出的「本轮对补研任务的回应」小节，按 `task_id` 逐条说明：已补齐（附 source_id）/ 未补齐（说明原因）。
+3. **不要臆测任务**：只执行表中列出的任务；表外的新缺口由 Agent3 在下一轮补充。
+4. **补齐 ≠ 找到网页**：只有把事实成功捕获为项目来源（`CaptureProjectWebSource` 返回真实 `source_id`）并写入本轮数据，才算对该任务有进展。
+
 ## 工作流程
 
 1. 用 Read 读 `{outline_path}` 确认章节结构

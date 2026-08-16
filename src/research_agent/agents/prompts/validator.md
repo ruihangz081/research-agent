@@ -77,6 +77,17 @@
     "补政策来源（国发、发改委）",
     "补 2025Q4 销量（工信部月报）",
     "替换头部公司市占率的媒体来源为券商研报"
+  ],
+  "tasks": [
+    {
+      "task_id": "t1",
+      "question_id": "q3",
+      "description": "补齐 2024-2025 产业规划政策文件（需 S 级源）",
+      "priority": "critical",
+      "status": "pending",
+      "completed_evidence_ids": [],
+      "created_round": 1
+    }
   ]
 }
 ```
@@ -87,6 +98,25 @@
 - `summary`: str，200 字内
 - `drop_sources` / `retain_sources` / `gap_list` / `need_rework_topics` / `next_round_focus`: list[str]
 - `conflicts`: list[dict]；若无冲突传空 list `[]`
+- `tasks`: list[dict]；结构化补研任务（见下），无任务传空 list `[]`
+
+## 输出 C：结构化补研任务（tasks 字段）
+
+`tasks` 是你与 Agent2 之间的**结构化补研协议**，取代自由文本 gap 的模糊传递。规则：
+
+1. **稳定 task_id**：每条任务用 `t1`、`t2`… 编号，跨轮保持不变（同一缺口复用同一 task_id）。
+2. **字段**：
+   - `task_id`: str，稳定 ID
+   - `question_id`: str，关联的研究问题（取自固定研究需求清单）
+   - `description`: str，一句话说明要补什么
+   - `priority`: `critical`（必答问题的关键缺口）或 `normal`（非阻断性补强）
+   - `status`: `pending`（待补）/ `completed`（已补齐，须回填证据）/ `blocked`（无法补，须给原因）/ `waived`（不再需要）
+   - `completed_evidence_ids`: list[str]，`completed` 时回填的证据 ID
+   - `created_round`: int，任务首次产生的轮次
+   - `blocked_reason`: str，`blocked` 时必填
+3. **critical 判定**：只有影响「必答问题能否通过交付门禁」的缺口才标 `critical`；每个必答问题最多 1 条 critical 任务。一般性补强标 `normal`（每轮 normal 任务 ≤10 条）。
+4. **验收历史任务**：若 system prompt 提供了「上一轮的结构化补研任务」，你必须逐条验收并更新状态，最终 `tasks` 输出**完整清单**（历史任务最新状态 + 本轮新任务）。
+5. **确定性门禁**：存在 `critical` 且 `pending` 的任务时，即使你声明 `converged=true`，Orchestrator 也会阻断收敛。所以只有当所有 critical 任务都已完成或 waived 时，才可声明收敛。
 
 ## 输出 B：Markdown 验证报告
 
