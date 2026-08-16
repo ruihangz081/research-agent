@@ -1,6 +1,7 @@
 Lumitrace.mountShell("materials");
 
-const state = { projectId: Lumitrace.selectedProject() || "default-project", projects: [], sources: [], selectedId: null };
+const requestedSourceId = new URLSearchParams(window.location.search).get("source");
+const state = { projectId: Lumitrace.selectedProject() || "default-project", projects: [], sources: [], selectedId: requestedSourceId };
 const $ = (id) => document.getElementById(id);
 const statuses = ["created", "uploading", "quarantined", "validating", "needs_password", "parsing", "ocr", "indexing", "needs_review", "ready", "active", "superseded", "failed", "archived"];
 

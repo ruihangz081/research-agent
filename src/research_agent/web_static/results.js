@@ -55,6 +55,7 @@ async function loadPreview() {
   try {
     const data = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/artifacts/${encodeURIComponent(artifact.key)}`);
     $("documentPreview").innerHTML = data.html || Lumitrace.renderMarkdown(data.content);
+    Lumitrace.hydrateSourceCitations($("documentPreview"), state.projectId);
   } catch (error) {
     $("documentPreview").innerHTML = `<div class="empty"><span class="empty-symbol">!</span><strong>预览失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p></div>`;
   }

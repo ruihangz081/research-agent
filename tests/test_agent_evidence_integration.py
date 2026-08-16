@@ -22,6 +22,7 @@ from research_agent.orchestrator import (
 )
 from research_agent.research_plan import derive_plan_from_outline, save_plan
 from research_agent.sources import LocalObjectStore, SQLiteRepository, SourceService
+from research_agent.sources.citations import render_citation
 from research_agent.sources.enums import VerificationStatus
 from research_agent.sources.models import EvidenceRecord
 from research_agent.sources.runtime import reset_runtime
@@ -252,14 +253,15 @@ async def test_formatter_reuses_report_and_surfaces_typeset_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state, repository, service, source, chunk = prepared_state(tmp_path, monkeypatch)
-    service.record_evidence(EvidenceRecord(
+    evidence = EvidenceRecord(
         evidence_id="ev-typeset", project_id=state.project_dir.name,
         research_question_id="q1", claim="Revenue reached 42 million",
         source_id=source.source_id, source_version=source.version,
         chunk_id=chunk.chunk_id, locator=chunk.locators[0],
         excerpt="Revenue reached 42 million", source_tier="S",
         verification_status=VerificationStatus.SUPPORTED, confidence=1,
-    ))
+    )
+    service.record_evidence(evidence)
     for attribute, filename in (
         ("analysis_path", config.FILE_ANALYSIS),
         ("sources_final_path", config.FILE_SOURCES_FINAL),
@@ -268,7 +270,10 @@ async def test_formatter_reuses_report_and_surfaces_typeset_failure(
         path.write_text("# input\n", encoding="utf-8")
         setattr(state, attribute, str(path))
     report = state.project_dir / config.FILE_FINAL_REPORT
-    report.write_text("# Report\n", encoding="utf-8")
+    report.write_text(
+        f"# Report\n\nRevenue reached 42 million {render_citation(evidence, source)}\n",
+        encoding="utf-8",
+    )
     manifest = state.project_dir / config.FILE_CHART_MANIFEST
     manifest.write_text('{"version": 1, "charts": []}', encoding="utf-8")
 

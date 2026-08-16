@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import shutil
 import traceback
 from dataclasses import dataclass
 from datetime import datetime
@@ -44,6 +45,34 @@ MAX_RETRIES: int = 2
 # 用户显式重试时，为采集验证循环追加的轮次预算，以及提示成本的软阈值
 RETRY_EXTRA_ROUNDS: int = 1
 RETRY_ROUND_SOFT_LIMIT: int = 10
+
+RERUNNABLE_STAGES: tuple[Stage, ...] = (
+    Stage.PLANNING,
+    Stage.SOURCING,
+    Stage.COLLECTING_AND_VALIDATING,
+    Stage.ANALYZING,
+    Stage.FORMATTING,
+)
+RERUN_STAGE_LABELS: dict[Stage, str] = {
+    Stage.PLANNING: "战略规划",
+    Stage.SOURCING: "信息源分层",
+    Stage.COLLECTING_AND_VALIDATING: "采集验证",
+    Stage.ANALYZING: "深度分析",
+    Stage.FORMATTING: "排版交付",
+}
+_STAGE_PROGRESS: dict[Stage, int] = {
+    Stage.INIT: 0,
+    Stage.PLANNING: 1,
+    Stage.AWAIT_CLARIFICATION: 1,
+    Stage.AWAIT_OUTLINE_APPROVAL: 1,
+    Stage.SOURCING: 2,
+    Stage.AWAIT_SOURCE_APPROVAL: 2,
+    Stage.COLLECTING_AND_VALIDATING: 3,
+    Stage.AWAIT_FINAL_SOURCE_APPROVAL: 3,
+    Stage.ANALYZING: 4,
+    Stage.FORMATTING: 5,
+    Stage.DONE: 6,
+}
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -467,6 +496,134 @@ def prepare_retry(state: ProjectState, *, extra_rounds: int = RETRY_EXTRA_ROUNDS
 
     state.save()
     return f"已复位「{failed_stage}」，将重跑该阶段"
+
+
+def available_rerun_stages(state: ProjectState) -> tuple[Stage, ...]:
+    """返回当前项目可以回退重跑的 Agent 阶段。"""
+    progress = _STAGE_PROGRESS[state.stage]
+    return tuple(
+        stage for stage in RERUNNABLE_STAGES
+        if _STAGE_PROGRESS[stage] <= progress
+    )
+
+
+def _require_rerun_input(state: ProjectState, stage: Stage) -> None:
+    required: dict[Stage, tuple[tuple[str, str | None], ...]] = {
+        Stage.SOURCING: (("调研提纲", state.outline_path),),
+        Stage.COLLECTING_AND_VALIDATING: (
+            ("调研提纲", state.outline_path),
+            ("信息源草案", state.sources_draft_path),
+        ),
+        Stage.ANALYZING: (
+            ("调研提纲", state.outline_path),
+            ("最终源清单", state.sources_final_path),
+        ),
+        Stage.FORMATTING: (
+            ("深度分析", state.analysis_path),
+            ("最终源清单", state.sources_final_path),
+        ),
+    }
+    for label, value in required.get(stage, ()):
+        if not value or not Path(value).is_file():
+            raise ValueError(f"无法从「{RERUN_STAGE_LABELS[stage]}」重跑：缺少{label}")
+
+
+def _rerun_artifacts(state: ProjectState, stage: Stage) -> tuple[Path, ...]:
+    project_dir = state.project_dir
+    by_stage: dict[Stage, tuple[Path, ...]] = {
+        Stage.PLANNING: (project_dir / config.FILE_OUTLINE,),
+        Stage.SOURCING: (project_dir / config.FILE_SOURCES_DRAFT,),
+        Stage.COLLECTING_AND_VALIDATING: (
+            project_dir / config.FILE_RAW_DATA_DIR,
+            project_dir / config.FILE_SOURCES_FINAL,
+            project_dir / config.FILE_VALIDATION,
+        ),
+        Stage.ANALYZING: (project_dir / config.FILE_ANALYSIS,),
+        Stage.FORMATTING: (
+            project_dir / config.FILE_FINAL_REPORT,
+            project_dir / config.FILE_CHART_MANIFEST,
+            project_dir / config.FILE_FINAL_REPORT_HTML,
+            project_dir / config.FILE_FINAL_REPORT_TEX,
+            project_dir / config.FILE_FINAL_REPORT_PDF,
+        ),
+    }
+    target_progress = _STAGE_PROGRESS[stage]
+    return tuple(
+        path
+        for candidate in RERUNNABLE_STAGES
+        if _STAGE_PROGRESS[candidate] >= target_progress
+        for path in by_stage[candidate]
+    )
+
+
+def _archive_rerun_artifacts(state: ProjectState, stage: Stage) -> Path | None:
+    existing = [path for path in _rerun_artifacts(state, stage) if path.exists()]
+    if not existing:
+        return None
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    backup_dir = state.project_dir / "rerun_backups" / f"{stamp}_{stage.value}"
+    backup_dir.mkdir(parents=True)
+    for path in existing:
+        shutil.move(str(path), str(backup_dir / path.name))
+    return backup_dir
+
+
+def prepare_stage_rerun(state: ProjectState, stage: Stage) -> str:
+    """回退到指定 Agent 阶段，并归档该阶段及其下游旧产物。"""
+    if stage not in RERUNNABLE_STAGES:
+        raise ValueError(f"不支持回退到阶段：{stage.value}")
+    if stage not in available_rerun_stages(state):
+        raise ValueError(
+            f"项目当前处于「{state.stage.value}」，不能前跳到「{stage.value}」"
+        )
+    _require_rerun_input(state, stage)
+    backup_dir = _archive_rerun_artifacts(state, stage)
+
+    target_progress = _STAGE_PROGRESS[stage]
+    if target_progress <= _STAGE_PROGRESS[Stage.PLANNING]:
+        state.outline_path = None
+        state.clarification = []
+        state.notes.pop("clarification_questions", None)
+        state.notes.pop("outline_feedback", None)
+    if target_progress <= _STAGE_PROGRESS[Stage.SOURCING]:
+        state.sources_draft_path = None
+        state.notes.pop("sources_feedback", None)
+    if target_progress <= _STAGE_PROGRESS[Stage.COLLECTING_AND_VALIDATING]:
+        state.sources_final_path = None
+        state.validation_report_path = None
+        state.collect_round = 0
+        state.converged = False
+        state.last_feedback_path = None
+        state.notes.pop("quality_gate", None)
+        state.notes.pop("quality_gate_reasons", None)
+        state.notes.pop("delivery_blocked_stage", None)
+        state.notes.pop("delivery_materials_url", None)
+    if target_progress <= _STAGE_PROGRESS[Stage.ANALYZING]:
+        state.analysis_path = None
+    if target_progress <= _STAGE_PROGRESS[Stage.FORMATTING]:
+        state.final_report_path = None
+        state.chart_manifest_path = None
+        state.final_report_html_path = None
+        state.final_report_tex_path = None
+        state.final_report_pdf_path = None
+        state.final_report_typeset_pdf_path = None
+        state.notes.pop("latex_typeset_error", None)
+
+    state.failed_stage = None
+    state.last_error = None
+    state.notes["last_rerun_at"] = datetime.now().isoformat()
+    state.notes["last_rerun_stage"] = stage.value
+    state.notes["rerun_count"] = int(state.notes.get("rerun_count", 0)) + 1
+    if backup_dir:
+        state.notes["last_rerun_backup"] = str(backup_dir)
+    else:
+        state.notes.pop("last_rerun_backup", None)
+    state.advance_to(stage)
+
+    message = f"已回退到「{RERUN_STAGE_LABELS[stage]}」，将从该阶段重新运行"
+    if backup_dir:
+        message += "；旧产物已备份"
+    return message
 
 
 # ═════════════════════════════════════════════════════════════════

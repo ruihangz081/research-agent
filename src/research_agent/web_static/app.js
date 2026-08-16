@@ -84,6 +84,32 @@ function renderFailure(project) {
   $("failureRetryBtn").title = project.retry_blocked_reason || "";
 }
 
+function updateRerunHint() {
+  const option = $("rerunStage").selectedOptions[0];
+  $("rerunHint").textContent = option
+    ? `将重新执行「${option.textContent}」及其后的全部阶段。`
+    : "当前没有可回退的阶段。";
+}
+
+function renderRerun(project) {
+  const options = project.rerun_stages || [];
+  const panel = $("rerunPanel");
+  panel.classList.toggle("hidden", options.length === 0);
+  if (!options.length) return;
+
+  const select = $("rerunStage");
+  const previous = select.value;
+  select.innerHTML = options.map((item) =>
+    `<option value="${Lumitrace.escapeHtml(item.value)}">${Lumitrace.escapeHtml(item.label)}</option>`
+  ).join("");
+  select.value = options.some((item) => item.value === previous)
+    ? previous
+    : options[options.length - 1].value;
+  select.disabled = !project.can_rerun;
+  $("rerunBtn").disabled = !project.can_rerun;
+  updateRerunHint();
+}
+
 function previewableArtifacts(project) {
   return project.artifacts;
 }
@@ -171,6 +197,7 @@ async function loadArtifact(forceTop = false) {
     const markup = artifact.html || Lumitrace.renderMarkdown(artifact.content);
     if (state.renderedArtifactKey !== artifactKey || state.renderedArtifactMarkup !== markup) {
       view.innerHTML = markup;
+      Lumitrace.hydrateSourceCitations(view, state.projectId);
       state.renderedArtifactKey = artifactKey;
       state.renderedArtifactMarkup = markup;
     }
@@ -200,6 +227,7 @@ function renderProject(project) {
   renderCheckpoint(project);
   renderFailure(project);
   renderResearchPlan(project);
+  renderRerun(project);
   renderArtifacts(project);
   updateDownloads(project);
 }
@@ -288,6 +316,36 @@ async function migrateResearchPlan(button) {
   }
 }
 
+async function rerunProject() {
+  const select = $("rerunStage");
+  const stage = select.value;
+  const label = select.selectedOptions[0]?.textContent || stage;
+  if (!stage) return;
+  state.busy = true;
+  const confirmed = await Lumitrace.confirmAction({
+    title: `从「${label}」重新运行？`,
+    message: "该阶段及之后的现有产物会移入项目备份，然后重新生成。更早阶段的产物和项目材料不会受影响。",
+    confirmLabel: "回退并运行",
+    tone: "primary",
+  });
+  if (!confirmed) { state.busy = false; return; }
+
+  const button = $("rerunBtn");
+  Lumitrace.setButtonBusy(button, true, "回退中");
+  try {
+    const result = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/rerun`, {
+      method: "POST",
+      body: JSON.stringify({ stage }),
+    });
+    Lumitrace.toast(result.message || "已回退并重新开始运行", "success");
+  } catch (error) { Lumitrace.toast(error.message, "danger"); }
+  finally {
+    Lumitrace.setButtonBusy(button, false);
+    state.busy = false;
+    await loadProject();
+  }
+}
+
 async function deleteProject(button) {
   state.busy = true;
   const confirmed = await Lumitrace.confirmAction({
@@ -337,6 +395,8 @@ $("clarifySubmitBtn").addEventListener("click", () => submitClarification(false)
 $("clarifySkipBtn").addEventListener("click", () => submitClarification(true));
 $("retryBtn").addEventListener("click", () => retryProject($("retryBtn")));
 $("failureRetryBtn").addEventListener("click", () => retryProject($("failureRetryBtn")));
+$("rerunStage").addEventListener("change", updateRerunHint);
+$("rerunBtn").addEventListener("click", rerunProject);
 $("deleteBtn").addEventListener("click", () => deleteProject($("deleteBtn")));
 $("failureDeleteBtn").addEventListener("click", () => deleteProject($("failureDeleteBtn")));
 $("planMigrateBtn").addEventListener("click", () => migrateResearchPlan($("planMigrateBtn")));

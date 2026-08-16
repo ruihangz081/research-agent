@@ -168,6 +168,8 @@ label > span { color: #53617c; font-size: 12px; font-weight: 700; }
 .failure-error { max-height: 190px; overflow: auto; margin: 0; border: 1px solid #f2dcdf; border-radius: 10px; background: #fff; color: #8b3f4a; padding: 12px 14px; font: 12px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
 .failure-reasons { margin: 8px 0 0; padding-left: 20px; color: #7c5f63; font-size: 12px; line-height: 1.8; }
 .failure-actions { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+.rerun-controls { display: grid; grid-template-columns: minmax(220px, 1fr) auto; align-items: end; gap: 12px; }
+.rerun-controls .button { min-height: 40px; }
 
 .clarify-list { display: grid; gap: 14px; }
 .clarify-item { display: grid; gap: 7px; }
@@ -295,6 +297,9 @@ label > span { color: #53617c; font-size: 12px; font-weight: 700; }
 .markdown input[type="checkbox"] { width: 14px; height: 14px; margin: 0 8px 0 0; vertical-align: -2px; }
 .markdown a { color: #356fca; text-decoration: underline; text-decoration-color: #b6caec; text-underline-offset: 3px; }
 .markdown a:hover { color: #285da8; text-decoration-color: currentColor; }
+.markdown .source-citation { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; margin: 0 1px 0 3px; border: 1px solid #cbd8f1; border-radius: 5px; background: #f3f7ff; color: #4169aa; font-size: 10px; font-weight: 750; line-height: 1; text-decoration: none; vertical-align: .45em; white-space: nowrap; }
+.markdown .source-citation:hover { border-color: #88a4d9; background: #e8f0ff; color: #285da8; text-decoration: none; }
+.markdown .source-citation sup { position: static; font-size: inherit; line-height: inherit; }
 .markdown blockquote { margin: 18px 0; border-left: 3px solid #88a4e8; background: #f6f8fd; padding: 12px 16px; color: #5e6d88; }
 .markdown hr { height: 1px; margin: 28px 0; border: 0; background: var(--line); }
 .markdown code { border-radius: 4px; background: #f0f2f8; padding: 2px 5px; color: #33415e; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; }
@@ -526,6 +531,7 @@ label > span { color: #53617c; font-size: 12px; font-weight: 700; }
   .page-content { padding: 20px 14px; }
   .page-heading { display: grid; }
   .summary-strip, .field-grid, .checkpoint-grid { grid-template-columns: 1fr; }
+  .rerun-controls { grid-template-columns: 1fr; }
   .usage-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .usage-stat { border-left: 0; border-top: 1px solid var(--line); }
   .usage-stat:nth-child(-n+2) { border-top: 0; }

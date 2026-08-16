@@ -261,15 +261,38 @@ class SourceService:
     def record_evidence(self, evidence, actor: str = "agent"):
         source = self.get_source(evidence.project_id, evidence.source_id)
         if source.version != evidence.source_version:
-            raise ValueError("evidence source version is stale")
+            raise ValueError(
+                "evidence source version is stale: "
+                f"received {evidence.source_version}, current version is {source.version}; "
+                "call ReadProjectSource again and use its source_version"
+            )
         chunk = self.repository.get_chunk(evidence.chunk_id, evidence.project_id)
-        if chunk is None or evidence.excerpt not in chunk.text:
-            raise ValueError("evidence excerpt is not present in project chunk")
+        if chunk is None:
+            raise ValueError(
+                f"evidence chunk {evidence.chunk_id!r} was not found in this project; "
+                "use a chunk_id returned by SearchProjectSources or ListProjectSourceChunks"
+            )
+        if chunk.source_id != evidence.source_id:
+            raise ValueError(
+                f"evidence chunk {evidence.chunk_id!r} belongs to source "
+                f"{chunk.source_id!r}, not {evidence.source_id!r}; "
+                "use the source_id and chunk_id returned together"
+            )
+        if evidence.excerpt not in chunk.text:
+            raise ValueError(
+                f"evidence excerpt is not present in project chunk {evidence.chunk_id!r}; "
+                "copy an exact contiguous substring from ReadProjectSource.text"
+            )
         if not chunk.locators:
-            raise ValueError("evidence chunk has no stable locator")
+            raise ValueError(
+                f"evidence chunk {evidence.chunk_id!r} has no stable locator and cannot be recorded"
+            )
         locator = evidence.locator.model_dump(mode="json", exclude_none=True)
         if not any(locator == item.model_dump(mode="json", exclude_none=True) for item in chunk.locators):
-            raise ValueError("evidence locator is not present in project chunk")
+            raise ValueError(
+                f"evidence locator is not present in project chunk {evidence.chunk_id!r}; "
+                "copy one complete locator from ReadProjectSource.locators without editing it"
+            )
         self.repository.put_evidence(evidence)
         self._audit(evidence.project_id, evidence.source_id, actor, "evidence.recorded", {"evidence_id": evidence.evidence_id})
         return evidence

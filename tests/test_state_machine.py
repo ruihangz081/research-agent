@@ -111,6 +111,93 @@ def test_prepare_retry_reruns_failed_agent_stage_in_place(projects_dir: Path) ->
     assert state.failed_stage is None
 
 
+def test_completed_project_can_rerun_from_analysis_with_backup(
+    projects_dir: Path,
+) -> None:
+    state = ProjectState(topic="回退分析", date_str="20260731", stage=Stage.DONE)
+    state.save()
+    outline = state.project_dir / config.FILE_OUTLINE
+    sources_final = state.project_dir / config.FILE_SOURCES_FINAL
+    analysis = state.project_dir / config.FILE_ANALYSIS
+    final_report = state.project_dir / config.FILE_FINAL_REPORT
+    for path, content in (
+        (outline, "# outline"),
+        (sources_final, "# sources"),
+        (analysis, "# old analysis"),
+        (final_report, "# old report"),
+    ):
+        path.write_text(content, encoding="utf-8")
+    state.outline_path = str(outline)
+    state.sources_final_path = str(sources_final)
+    state.analysis_path = str(analysis)
+    state.final_report_path = str(final_report)
+    state.save()
+
+    message = orchestrator.prepare_stage_rerun(state, Stage.ANALYZING)
+
+    reloaded = ProjectState.load(state.project_dir)
+    backup_dir = Path(reloaded.notes["last_rerun_backup"])
+    assert reloaded.stage == Stage.ANALYZING
+    assert reloaded.analysis_path is None
+    assert reloaded.final_report_path is None
+    assert outline.exists()
+    assert sources_final.exists()
+    assert not analysis.exists()
+    assert not final_report.exists()
+    assert (backup_dir / config.FILE_ANALYSIS).read_text(encoding="utf-8") == "# old analysis"
+    assert (backup_dir / config.FILE_FINAL_REPORT).read_text(encoding="utf-8") == "# old report"
+    assert "旧产物已备份" in message
+    assert orchestrator.available_rerun_stages(reloaded) == (
+        Stage.PLANNING,
+        Stage.SOURCING,
+        Stage.COLLECTING_AND_VALIDATING,
+        Stage.ANALYZING,
+    )
+
+
+def test_rerun_collection_archives_old_rounds_and_resets_progress(
+    projects_dir: Path,
+) -> None:
+    state = ProjectState(topic="回退采集", date_str="20260731", stage=Stage.DONE)
+    state.save()
+    outline = state.project_dir / config.FILE_OUTLINE
+    sources_draft = state.project_dir / config.FILE_SOURCES_DRAFT
+    raw_dir = state.project_dir / config.FILE_RAW_DATA_DIR
+    outline.write_text("# outline", encoding="utf-8")
+    sources_draft.write_text("# draft", encoding="utf-8")
+    raw_dir.mkdir()
+    (raw_dir / "round_1.md").write_text("old round", encoding="utf-8")
+    state.outline_path = str(outline)
+    state.sources_draft_path = str(sources_draft)
+    state.collect_round = 3
+    state.converged = True
+    state.last_feedback_path = str(raw_dir / "feedback_round_3.json")
+    state.save()
+
+    orchestrator.prepare_stage_rerun(state, Stage.COLLECTING_AND_VALIDATING)
+
+    reloaded = ProjectState.load(state.project_dir)
+    backup_dir = Path(reloaded.notes["last_rerun_backup"])
+    assert reloaded.stage == Stage.COLLECTING_AND_VALIDATING
+    assert reloaded.collect_round == 0
+    assert reloaded.converged is False
+    assert reloaded.last_feedback_path is None
+    assert not raw_dir.exists()
+    assert (backup_dir / config.FILE_RAW_DATA_DIR / "round_1.md").exists()
+
+
+def test_rerun_rejects_stage_the_project_has_not_reached(projects_dir: Path) -> None:
+    state = ProjectState(
+        topic="禁止前跳",
+        date_str="20260731",
+        stage=Stage.AWAIT_OUTLINE_APPROVAL,
+    )
+    state.save()
+
+    with pytest.raises(ValueError, match="不能前跳"):
+        orchestrator.prepare_stage_rerun(state, Stage.ANALYZING)
+
+
 def test_cli_delete_requires_confirmation_then_removes_project(projects_dir: Path) -> None:
     from research_agent.__main__ import main
 

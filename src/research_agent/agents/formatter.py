@@ -18,7 +18,11 @@ from ..report_charts import load_chart_manifest
 from ..report_layout import generate_typeset_artifacts
 from ..research_plan import ResearchPlanError, plan_prompt_context, require_plan
 from ..sources.runtime import get_service
-from ..sources.citations import render_citation, validate_report_citations
+from ..sources.citations import (
+    render_citation,
+    validate_report_citations,
+    validate_report_text_citations,
+)
 from ..sources.enums import VerificationStatus
 from ..sources.models import EvidenceRecord, SourceAsset
 from ..tools import default_registry
@@ -82,6 +86,21 @@ def _finalize_evidence_appendix(state: "ProjectState", report_path: Path) -> Non
     report_path.write_text(report.rstrip() + "\n" + "\n".join(appendix) + "\n", encoding="utf-8")
 
 
+def _audit_final_report_citations(
+    report_path: Path,
+    supported: list[EvidenceRecord],
+    sources: dict[str, SourceAsset],
+) -> None:
+    valid, errors = validate_report_text_citations(
+        report_path.read_text(encoding="utf-8"), supported, sources
+    )
+    if not valid:
+        details = "; ".join(errors[:10])
+        if len(errors) > 10:
+            details += f"; 另有 {len(errors) - 10} 项"
+        raise RuntimeError(f"Agent5 引用审计失败：{details}")
+
+
 def _load_formatter_prompt() -> str:
     return _PROMPT_FORMATTER.read_text(encoding="utf-8")
 
@@ -117,7 +136,7 @@ async def run_formatting(state: "ProjectState") -> Path:
 
     # Fail before invoking the LLM. A formatter cannot repair missing source
     # provenance, and retrying it only regenerates the same blocked artifacts.
-    _require_delivery_evidence(state)
+    supported, sources = _require_delivery_evidence(state)
 
     outline_path = Path(state.outline_path)
     analysis_path = Path(state.analysis_path)
@@ -218,6 +237,9 @@ async def run_formatting(state: "ProjectState") -> Path:
         raise RuntimeError(f"Agent5 未能生成图表清单：{chart_manifest_path}")
     load_chart_manifest(chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS)
 
+    # Audit the authored report before adding the generated evidence appendix;
+    # otherwise appendix citations could mask a report body with no valid citations.
+    _audit_final_report_citations(final_report_path, supported, sources)
     _finalize_evidence_appendix(state, final_report_path)
     state.final_report_path = str(final_report_path)
     state.chart_manifest_path = str(chart_manifest_path)
