@@ -10,6 +10,7 @@ from research_agent import config, orchestrator
 from research_agent.agents import analyst, formatter
 from research_agent.research_plan import derive_plan_from_outline, save_plan
 from research_agent.sources import LocalObjectStore, SQLiteRepository, SourceService
+from research_agent.sources.citations import render_citation
 from research_agent.sources.enums import VerificationStatus
 from research_agent.sources.models import EvidenceRecord
 from research_agent.sources.runtime import reset_runtime
@@ -136,7 +137,7 @@ def _record_evidence(
     state: ProjectState,
     *,
     verification_status: VerificationStatus,
-) -> tuple[SQLiteRepository, str, int]:
+) -> tuple[SQLiteRepository, str, int, str]:
     repository = SQLiteRepository(config.SOURCE_DATA_DIR / "catalog.sqlite3")
     service = SourceService(
         repository,
@@ -152,23 +153,22 @@ def _record_evidence(
     service.parse_source(state.project_dir.name, source.source_id)
     chunk = service.index_source(state.project_dir.name, source.source_id)[0]
     service.activate(state.project_dir.name, source.source_id)
-    service.record_evidence(
-        EvidenceRecord(
-            evidence_id="ev-1",
-            project_id=state.project_dir.name,
-            research_question_id="q1",
-            claim="Revenue reached 42 million",
-            source_id=source.source_id,
-            source_version=source.version,
-            chunk_id=chunk.chunk_id,
-            locator=chunk.locators[0],
-            excerpt="Revenue reached 42 million",
-            source_tier="S",
-            verification_status=verification_status,
-            confidence=1,
-        )
+    evidence = EvidenceRecord(
+        evidence_id="ev-1",
+        project_id=state.project_dir.name,
+        research_question_id="q1",
+        claim="Revenue reached 42 million",
+        source_id=source.source_id,
+        source_version=source.version,
+        chunk_id=chunk.chunk_id,
+        locator=chunk.locators[0],
+        excerpt="Revenue reached 42 million",
+        source_tier="S",
+        verification_status=verification_status,
+        confidence=1,
     )
-    return repository, source.source_id, source.version
+    service.record_evidence(evidence)
+    return repository, source.source_id, source.version, render_citation(evidence, source)
 
 
 def test_agent4_allowed_tools_are_read_only_and_locked() -> None:
@@ -298,16 +298,35 @@ async def test_supported_analysis_citation_allows_agent5(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _analysis_state(tmp_path, monkeypatch)
-    repository, source_id, version = _record_evidence(
+    repository, source_id, version, citation = _record_evidence(
         state,
         verification_status=VerificationStatus.SUPPORTED,
     )
     _write_outcome(state)
+    (state.project_dir / config.FILE_CLAIMS).write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "claims": [
+                    {
+                        "claim_id": "c1",
+                        "question_id": "q1",
+                        "kind": "fact",
+                        "importance": "critical",
+                        "text": "Revenue reached 42 million",
+                        "supporting_evidence_ids": ["ev-1"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
     calls = await _run_from_analysis(
         state,
         monkeypatch,
-        f"Verified fact [src:{source_id}:v{version}, locator]",
+        f"Verified fact {citation}",
     )
 
     assert calls == ["Agent4", "Agent5"]
@@ -321,7 +340,7 @@ async def test_fabricated_locator_for_supported_source_blocks_agent5(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _analysis_state(tmp_path, monkeypatch)
-    repository, source_id, version = _record_evidence(
+    repository, source_id, version, _ = _record_evidence(
         state,
         verification_status=VerificationStatus.SUPPORTED,
     )
@@ -347,7 +366,7 @@ async def test_stale_analysis_source_version_blocks_agent5(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _analysis_state(tmp_path, monkeypatch)
-    repository, source_id, version = _record_evidence(
+    repository, source_id, version, _ = _record_evidence(
         state,
         verification_status=VerificationStatus.SUPPORTED,
     )
@@ -383,7 +402,7 @@ async def test_unverified_analysis_citation_blocks_agent5(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _analysis_state(tmp_path, monkeypatch)
-    repository, source_id, version = _record_evidence(
+    repository, source_id, version, _ = _record_evidence(
         state,
         verification_status=VerificationStatus.UNVERIFIED,
     )
@@ -462,7 +481,7 @@ def test_analyst_context_excludes_unverified_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _analysis_state(tmp_path, monkeypatch)
-    repository, _, _ = _record_evidence(
+    repository, _, _, _ = _record_evidence(
         state,
         verification_status=VerificationStatus.SUPPORTED,
     )
@@ -508,7 +527,7 @@ def test_analysis_gap_retry_preserves_rounds_and_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _analysis_state(tmp_path, monkeypatch)
-    repository, _, _ = _record_evidence(
+    repository, _, _, _ = _record_evidence(
         state,
         verification_status=VerificationStatus.SUPPORTED,
     )
@@ -545,7 +564,7 @@ async def test_research_retry_repasses_quality_before_agent4_and_agent5(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _analysis_state(tmp_path, monkeypatch)
-    repository, source_id, version = _record_evidence(
+    repository, source_id, version, citation = _record_evidence(
         state,
         verification_status=VerificationStatus.SUPPORTED,
     )
@@ -597,10 +616,30 @@ async def test_research_retry_repasses_quality_before_agent4_and_agent5(
         calls.append("Agent4")
         path = current.project_dir / config.FILE_ANALYSIS
         path.write_text(
-            f"Verified fact [src:{source_id}:v{version}, locator]",
+            f"Verified fact {citation}",
             encoding="utf-8",
         )
         _write_outcome(current)
+        claims_path = current.project_dir / config.FILE_CLAIMS
+        claims_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "claims": [
+                        {
+                            "claim_id": "c1",
+                            "question_id": "q1",
+                            "kind": "fact",
+                            "importance": "critical",
+                            "text": "Revenue reached 42 million",
+                            "supporting_evidence_ids": ["ev-1"],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         return path
 
     async def fake_formatting(current: ProjectState) -> Path:
