@@ -35,9 +35,6 @@ from .types import (
 
 logger = logging.getLogger(__name__)
 
-# 可重试的 HTTP 状态码
-_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-
 
 class LLMClient:
     """异步 LLM 客户端。

@@ -4,12 +4,19 @@ from pathlib import Path
 from ..registry import default_registry
 
 
-@default_registry.tool(name="Write", description="Write content to a file at the given absolute path, creating directories as needed.")
+@default_registry.tool(
+    name="Write",
+    description=(
+        "Write content to a file inside the current project directory, "
+        "creating directories as needed. The path must stay within the project; "
+        "paths outside it are rejected."
+    ),
+)
 async def write_file(file_path: str, content: str) -> str:
     """Write content to a file.
 
     Args:
-        file_path: Absolute path to the file to write.
+        file_path: Path to the file to write, restricted to the project directory.
         content: The text content to write.
     """
     try:

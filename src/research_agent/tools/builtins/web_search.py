@@ -12,6 +12,7 @@ Provider 由 `SEARCH_API_PROVIDER` 决定：
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -26,6 +27,33 @@ _TIMEOUT = 20.0
 _ANYSEARCH_URL = "https://api.anysearch.com/v1/search"
 _KEYED_PROVIDERS = {"serpapi", "tavily"}
 SUPPORTED_PROVIDERS = {"anysearch", "duckduckgo", *_KEYED_PROVIDERS}
+
+# 共享连接池：避免每次搜索都新建 AsyncClient（连接建立开销 + 端口耗尽风险）。
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """返回模块级共享 AsyncClient，惰性创建并复用连接池。"""
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            timeout=_TIMEOUT,
+            limits=httpx.Limits(
+                max_connections=10,
+                max_keepalive_connections=5,
+            ),
+        )
+    return _client
+
+
+def _reset_client() -> None:
+    """丢弃共享 client，让下次调用重建（测试隔离或运行时切换配置后调用）。
+
+    进程级 client 随进程退出释放；这里只断开引用，测试用 MockTransport
+    不持有真实连接，无需显式 await close。
+    """
+    global _client
+    _client = None
 
 
 def _active_provider() -> str:
@@ -105,17 +133,17 @@ async def _search_anysearch(query: str, num_results: int) -> list[dict[str, str]
         headers["Authorization"] = f"Bearer {config.SEARCH_API_KEY}"
 
     limit = max(1, min(num_results, 20))
-    async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
-        response = await client.post(
-            _ANYSEARCH_URL,
-            json={
-                "query": query,
-                "max_results": limit,
-                "format": "json",
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
+    response = await _get_client().post(
+        _ANYSEARCH_URL,
+        headers=headers,
+        json={
+            "query": query,
+            "max_results": limit,
+            "format": "json",
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
 
     if payload.get("code") != 0:
         raise RuntimeError(payload.get("message") or "AnySearch returned an error")
@@ -143,18 +171,17 @@ async def _search_anysearch(query: str, num_results: int) -> list[dict[str, str]
 
 
 async def _search_serpapi(query: str, num_results: int) -> list[dict[str, str]]:
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        response = await client.get(
-            "https://serpapi.com/search",
-            params={
-                "q": query,
-                "num": num_results,
-                "engine": "google",
-                "api_key": config.SEARCH_API_KEY,
-            },
-        )
-        response.raise_for_status()
-        payload = response.json()
+    response = await _get_client().get(
+        "https://serpapi.com/search",
+        params={
+            "q": query,
+            "num": num_results,
+            "engine": "google",
+            "api_key": config.SEARCH_API_KEY,
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
 
     if payload.get("error"):
         raise RuntimeError(str(payload["error"]))
@@ -177,18 +204,17 @@ async def _search_serpapi(query: str, num_results: int) -> list[dict[str, str]]:
 
 
 async def _search_tavily(query: str, num_results: int) -> list[dict[str, str]]:
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        response = await client.post(
-            "https://api.tavily.com/search",
-            json={
-                "query": query,
-                "max_results": num_results,
-                "search_depth": "advanced",
-            },
-            headers={"Authorization": f"Bearer {config.SEARCH_API_KEY}"},
-        )
-        response.raise_for_status()
-        payload = response.json()
+    response = await _get_client().post(
+        "https://api.tavily.com/search",
+        json={
+            "query": query,
+            "max_results": num_results,
+            "search_depth": "advanced",
+        },
+        headers={"Authorization": f"Bearer {config.SEARCH_API_KEY}"},
+    )
+    response.raise_for_status()
+    payload = response.json()
 
     results = []
     for item in (payload.get("results") or [])[:num_results]:
@@ -225,8 +251,8 @@ async def _search_duckduckgo_with_fallback(query: str, num_results: int) -> str:
     )
 
 
-async def _search_duckduckgo(query: str, num_results: int) -> list[dict[str, str]]:
-    """使用 ddgs / duckduckgo-search 库搜索。"""
+def _search_duckduckgo_sync(query: str, num_results: int) -> list[dict[str, str]]:
+    """使用 ddgs / duckduckgo-search 库搜索（同步阻塞实现，供 to_thread 调用）。"""
     try:
         from ddgs import DDGS
     except ImportError:
@@ -245,15 +271,19 @@ async def _search_duckduckgo(query: str, num_results: int) -> list[dict[str, str
     return results
 
 
+async def _search_duckduckgo(query: str, num_results: int) -> list[dict[str, str]]:
+    """使用 ddgs / duckduckgo-search 库搜索（在线程池执行，避免阻塞事件循环）。"""
+    return await asyncio.to_thread(_search_duckduckgo_sync, query, num_results)
+
+
 async def _search_ddg_html(query: str, num_results: int) -> list[dict[str, str]]:
     """直接用 DuckDuckGo 的 HTML 接口（兜底方案）。"""
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(
-            "https://html.duckduckgo.com/html/",
-            params={"q": query},
-            headers={"User-Agent": "Mozilla/5.0 (research-agent)"},
-        )
-        response.raise_for_status()
+    response = await _get_client().get(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query},
+        headers={"User-Agent": "Mozilla/5.0 (research-agent)"},
+    )
+    response.raise_for_status()
 
     results = []
     for match in re.finditer(

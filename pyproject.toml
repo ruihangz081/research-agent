@@ -24,6 +24,7 @@ dependencies = [
     "pytesseract>=0.3.13",
     "python-multipart>=0.0.9",
     "bleach>=6.1",
+    "certifi>=2024.0",
     "matplotlib>=3.8",
     "pypandoc-binary>=1.15",
     "vl-convert-python>=1.7",
@@ -32,6 +33,12 @@ dependencies = [
 [project.optional-dependencies]
 search = ["ddgs>=9.14", "duckduckgo-search>=6.0"]
 web = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "reportlab>=4.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-anyio>=0.0",
+    "httpx>=0.27",
+    "anyio>=4.0",
+]
 
 [project.scripts]
 research-agent = "research_agent.__main__:main"

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -151,6 +151,8 @@ LOCKS: dict[str, asyncio.Lock] = {}
 CONFIG_LOCK = asyncio.Lock()
 # 持有后台任务的强引用：事件循环只持弱引用，不保管会导致任务可能被 GC 回收
 BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+# SSE 订阅者：project_id -> 每个连接一个 asyncio.Queue，项目状态变化时广播
+SUBSCRIBERS: dict[str, set[asyncio.Queue[str]]] = {}
 
 
 class CreateProjectRequest(BaseModel):
@@ -328,6 +330,28 @@ def _log(project_id: str, message: str) -> None:
         }
     job["logs"].append({"time": entry["time"], "message": entry["message"]})
     job["logs"] = job["logs"][-run_log.MAX_ENTRIES:]
+    _notify_subscribers(project_id)
+
+
+def _notify_subscribers(project_id: str) -> None:
+    """通知该项目的全部 SSE 连接有状态更新。
+
+    每个连接的队列容量为 1：若消费者还没消费上一次更新，用最新的替换掉，
+    避免运行中的项目日志洪泛导致队列堆积。
+    """
+    queues = SUBSCRIBERS.get(project_id)
+    if not queues:
+        return
+    for queue in list(queues):
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            queue.put_nowait("update")
+        except asyncio.QueueFull:
+            pass
 
 
 def _artifact_paths(state: ProjectState) -> list[tuple[str, str, Path | None]]:
@@ -706,6 +730,7 @@ async def _run_until_pause(project_id: str) -> None:
         finally:
             job["running"] = False
             job["updated_at"] = datetime.now().isoformat()
+            _notify_subscribers(project_id)
 
 
 def _schedule(project_id: str) -> None:
@@ -914,6 +939,45 @@ async def api_project(project_id: str) -> dict[str, Any]:
     return _serialize_state(_load_state(project_id))
 
 
+@app.get("/api/projects/{project_id}/events")
+async def api_project_events(project_id: str, request: Request) -> StreamingResponse:
+    """SSE 事件流：项目状态或日志变化时推送，替代前端 3 秒全量轮询。
+
+    每个连接维护一个容量为 1 的队列；连接断开（客户端关闭、任务取消）时
+    自动从订阅集合移除。
+    """
+    _load_state(project_id)  # 校验项目存在，早失败返回 404
+
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+    SUBSCRIBERS.setdefault(project_id, set()).add(queue)
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            # 首次连接立即发一次，让前端拿到当前快照
+            yield "event: update\ndata: {}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield "event: update\ndata: {}\n\n"
+                except asyncio.TimeoutError:
+                    # 心跳，保持连接不被中间代理关闭
+                    yield ": keep-alive\n\n"
+        finally:
+            SUBSCRIBERS.get(project_id, set()).discard(queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.post("/api/projects/{project_id}/clarification")
 async def api_submit_clarification(
     project_id: str, req: ClarificationRequest
@@ -1019,6 +1083,7 @@ async def api_delete_project(project_id: str) -> dict[str, Any]:
     shutil.rmtree(project_dir)
     JOBS.pop(project_id, None)
     LOCKS.pop(project_id, None)
+    SUBSCRIBERS.pop(project_id, None)
     return {"ok": True, "id": project_id}
 
 

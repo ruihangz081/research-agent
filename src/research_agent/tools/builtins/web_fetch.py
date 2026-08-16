@@ -22,6 +22,37 @@ logger = logging.getLogger(__name__)
 _MAX_CONTENT_LEN = 8000  # 截断长度，避免上下文爆炸
 _MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
 
+# 共享连接池：抓取网页需要 follow_redirects 与受信任 SSL 上下文，单独维护一个
+# 模块级 client，避免每次 fetch 都重建连接。
+_client: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """返回模块级共享 AsyncClient（follow_redirects + 受信任证书），惰性创建。"""
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            timeout=20.0,
+            follow_redirects=True,
+            verify=_trusted_ssl_context(),
+            headers={"User-Agent": "Mozilla/5.0 (research-agent)"},
+            limits=httpx.Limits(
+                max_connections=10,
+                max_keepalive_connections=5,
+            ),
+        )
+    return _client
+
+
+def _reset_client() -> None:
+    """丢弃共享 client，让下次调用重建（测试隔离或运行时切换配置后调用）。
+
+    进程级 client 随进程退出释放；这里只断开引用，测试用 MockTransport
+    不持有真实连接，无需显式 await close。
+    """
+    global _client
+    _client = None
+
 
 @dataclass(frozen=True)
 class WebResource:
@@ -77,14 +108,8 @@ def _trusted_ssl_context() -> ssl.SSLContext:
 async def fetch_web_resource(url: str) -> WebResource:
     """Fetch one public web resource without truncating its immutable snapshot."""
     _validate_public_http_url(url)
-    async with httpx.AsyncClient(
-        timeout=20.0,
-        follow_redirects=True,
-        verify=_trusted_ssl_context(),
-        headers={"User-Agent": "Mozilla/5.0 (research-agent)"},
-    ) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
+    resp = await _get_client().get(url)
+    resp.raise_for_status()
     _validate_public_http_url(str(resp.url))
     content = resp.content
     if len(content) > _MAX_DOWNLOAD_BYTES:

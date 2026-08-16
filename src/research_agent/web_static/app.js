@@ -1,6 +1,6 @@
 Lumitrace.mountShell("workspace");
 
-const state = { projects: [], projectId: Lumitrace.selectedProject(), project: null, artifactKey: null, renderedArtifactKey: null, renderedArtifactMarkup: null, poll: null, busy: false };
+const state = { projects: [], projectId: Lumitrace.selectedProject(), project: null, artifactKey: null, renderedArtifactKey: null, renderedArtifactMarkup: null, events: null, busy: false };
 const $ = (id) => document.getElementById(id);
 const pipelineStages = [
   ["初始化", ["init"]],
@@ -252,6 +252,22 @@ async function loadProject() {
   }
 }
 
+// 用 SSE 增量推送替代 3 秒全量轮询：项目状态或日志变化时服务端推事件，
+// 客户端收到事件后再拉取最新快照，空闲时不再空转请求。
+function connectEvents() {
+  if (!state.projectId) return;
+  if (state.events) state.events.close();
+  const source = new EventSource(`/api/projects/${encodeURIComponent(state.projectId)}/events`);
+  source.addEventListener("update", () => {
+    if (state.projectId) loadProject();
+  });
+  // EventSource 会自动重连；连接建立后立即刷新一次以对齐首屏状态
+  source.addEventListener("open", () => {
+    if (state.projectId) loadProject();
+  });
+  state.events = source;
+}
+
 async function continueProject() {
   const button = $("continueBtn");
   Lumitrace.setButtonBusy(button, true, "启动中");
@@ -357,7 +373,7 @@ async function deleteProject(button) {
   Lumitrace.setButtonBusy(button, true, "删除中");
   try {
     await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}`, { method: "DELETE" });
-    window.clearInterval(state.poll);
+    if (state.events) state.events.close();
     localStorage.removeItem("lumitrace.project");
     Lumitrace.toast("项目已删除", "warning");
     window.location.href = "/research";
@@ -406,5 +422,9 @@ $("downloadPdfBtn").addEventListener("click", () => openDownload("/download/fina
 $("typesetBtn").addEventListener("click", typeset);
 $("downloadTexBtn").addEventListener("click", () => openDownload("/download/final-report.tex"));
 
-loadProject();
-state.poll = window.setInterval(loadProject, 3000);
+async function bootstrap() {
+  await loadProject();
+  connectEvents();
+}
+
+bootstrap();

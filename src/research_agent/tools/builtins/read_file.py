@@ -4,12 +4,18 @@ from pathlib import Path
 from ..registry import default_registry
 
 
-@default_registry.tool(name="Read", description="Read the contents of a file at the given absolute path.")
+@default_registry.tool(
+    name="Read",
+    description=(
+        "Read the contents of a file inside the current project directory. "
+        "The path must stay within the project; paths outside it are rejected."
+    ),
+)
 async def read_file(file_path: str) -> str:
     """Read a file and return its contents.
 
     Args:
-        file_path: Absolute path to the file to read.
+        file_path: Path to the file to read, restricted to the project directory.
     """
     path = Path(file_path)
     if not path.exists():

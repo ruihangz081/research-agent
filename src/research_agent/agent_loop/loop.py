@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .. import token_usage
@@ -260,6 +261,10 @@ class AgentSession:
 # ═══════════════════════════════════════════════════════════════
 
 
+# 文件工具的名称集合。这些工具直接读写文件系统，必须受项目目录边界约束。
+_FILE_TOOL_NAMES = ("Read", "Write", "read_file", "write_file")
+
+
 async def _execute_tool_call(
     tc: ToolCallInfo,
     registry: ToolRegistry,
@@ -271,19 +276,38 @@ async def _execute_tool_call(
     except json.JSONDecodeError as e:
         return f"Error: Invalid JSON arguments for tool '{tc.function.name}': {e}"
 
-    # 对文件工具解析相对路径
-    if cwd and tc.function.name in ("Read", "Write", "read_file", "write_file"):
-        args = _resolve_relative_paths(args, cwd)
+    # 文件工具必须受项目目录边界约束：绝对路径、`..`、符号链接都不允许逃逸。
+    # 越界时返回结构化错误而非抛异常，让模型有机会在下一轮自纠。
+    if cwd and tc.function.name in _FILE_TOOL_NAMES:
+        try:
+            args = _resolve_file_paths(args, cwd)
+        except ValueError as e:
+            return f"Error: {e}"
 
     return await registry.execute(tc.function.name, args)
 
 
-def _resolve_relative_paths(args: dict[str, Any], cwd: str) -> dict[str, Any]:
-    """将 file_path 参数中的相对路径转为绝对路径。"""
-    import os
+def _resolve_file_path(raw: str, cwd: str) -> str:
+    """把文件工具的一个路径解析为 `cwd` 内的绝对路径，越界抛 `ValueError`。
+
+    这是程序级边界：模型输出绝对路径、`..` 或符号链接指向项目目录之外时，
+    一律拒绝，而不是只靠 prompt 约束。
+    """
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = Path(cwd) / candidate
+    root = Path(cwd).resolve()
+    resolved = candidate.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(f"path '{raw}' escapes the project directory '{cwd}'")
+    return str(resolved)
+
+
+def _resolve_file_paths(args: dict[str, Any], cwd: str) -> dict[str, Any]:
+    """把文件工具的 file_path/path 参数解析并约束在 `cwd` 内。"""
     for key in ("file_path", "path"):
-        if key in args and not os.path.isabs(args[key]):
-            args[key] = os.path.join(cwd, args[key])
+        if key in args and isinstance(args[key], str):
+            args[key] = _resolve_file_path(args[key], cwd)
     return args
 
 

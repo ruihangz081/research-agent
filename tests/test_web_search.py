@@ -52,13 +52,7 @@ async def test_anysearch_results_and_optional_auth(
         )
 
     transport = httpx.MockTransport(handler)
-    original = httpx.AsyncClient
-
-    def patched(*args, **kwargs):
-        kwargs["transport"] = transport
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", patched)
+    monkeypatch.setattr(ws, "_client", httpx.AsyncClient(transport=transport))
 
     result = await ws.web_search("2025 官方数据", num_results=3)
 
@@ -153,13 +147,7 @@ async def test_serpapi_results_are_used(monkeypatch: pytest.MonkeyPatch) -> None
         )
 
     transport = httpx.MockTransport(handler)
-    original = httpx.AsyncClient
-
-    def patched(*args, **kwargs):
-        kwargs["transport"] = transport
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", patched)
+    monkeypatch.setattr(ws, "_client", httpx.AsyncClient(transport=transport))
 
     result = await ws.web_search("半导体 营业收入", num_results=1)
 
@@ -191,13 +179,7 @@ async def test_tavily_results_are_used(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
     transport = httpx.MockTransport(handler)
-    original = httpx.AsyncClient
-
-    def patched(*args, **kwargs):
-        kwargs["transport"] = transport
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", patched)
+    monkeypatch.setattr(ws, "_client", httpx.AsyncClient(transport=transport))
 
     result = await ws.web_search("行业 市场规模", num_results=1)
 
@@ -215,13 +197,7 @@ async def test_provider_http_error_is_surfaced(monkeypatch: pytest.MonkeyPatch) 
         return httpx.Response(401, json={"detail": "invalid key"})
 
     transport = httpx.MockTransport(handler)
-    original = httpx.AsyncClient
-
-    def patched(*args, **kwargs):
-        kwargs["transport"] = transport
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", patched)
+    monkeypatch.setattr(ws, "_client", httpx.AsyncClient(transport=transport))
 
     result = await ws.web_search("任意查询")
 
