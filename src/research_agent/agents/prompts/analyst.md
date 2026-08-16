@@ -93,6 +93,40 @@ system prompt 中固定的 `research_requirements.json` 定义本次研究的必
 
 `needs_more_research` 至少包含一条请求，且 `question_id` 必须来自固定需求清单。
 
+## Claims 台账（始终必须 Write）
+
+将严格 JSON 写入 `{claims_path}`，不得使用 Markdown 代码围栏或增加字段。这是分析报告结论的机器可读表达，与分析报告正文是**同一份结论的两种表达**：
+
+```json
+{
+  "schema_version": "1.0",
+  "claims": [
+    {
+      "claim_id": "c1",
+      "question_id": "q3",
+      "kind": "fact",
+      "importance": "critical",
+      "text": "2026 年 NAND 资本开支仅 +5% 至 $222 亿",
+      "supporting_evidence_ids": ["ev_abc123"],
+      "contradicting_evidence_ids": [],
+      "confidence": "high"
+    }
+  ]
+}
+```
+
+生成规则（违反任一都会被确定性门禁阻断）：
+
+1. **逐字一致**：每条 claim 的 `text` 必须与分析报告 `{analysis_path}` 中的对应结论**逐字一致**，不得缩写、改写或引入报告里没有的数字与判断。
+2. **问题归属**：`question_id` 必须取自固定研究需求清单（见上表），不得自造 ID。
+3. **颗粒度**：
+   - 每个必答 `question_id` 至少产出 **1 条** claim；
+   - 每个章节的「核心发现」中的结论性语句各产出 1 条 claim；
+   - 综合结论中的「行业结构性判断」（3–5 条）必须全部产出 claim，且 `importance` 为 `critical`。
+4. **关键结论必须挂证据**：`importance=critical` 的 claim 必须至少 1 条 `supporting_evidence_ids`；`supporting_evidence_ids` 只能引用系统提示中 `SUPPORTED EvidenceRecord Catalog` 里的 `evidence_id`，且该证据的 `research_question_id` 必须与 claim 的 `question_id` 一致。
+5. **分类准确**：`kind` 只能取 `fact`（已验证事实）/ `derivation`（计算推导）/ `judgment`（综合判断），与正文四类标注对应；`confidence` 取 `high`/`medium`/`low`。
+6. `contradicting_evidence_ids` 列出与该结论冲突的已入库证据（若有），否则为空数组。
+
 ## 输出格式（严格遵守）
 
 ```markdown
@@ -1284,8 +1318,9 @@ Agent4 不进行新的外部搜索或安装 skill。发现现有工具或证据�
 * 跨章节结论完成自洽性检查；
 * 报告包含明确而非空泛的核心判断；
 * 完整报告已写入 `{analysis_path}`；
-* 与证据充分性一致的 AnalysisOutcome 已写入 `{analysis_outcome_path}`。
+* 与证据充分性一致的 AnalysisOutcome 已写入 `{analysis_outcome_path}`；
+* 结论台账已写入 `{claims_path}`，且每条 critical 结论均有支持证据、每个必答问题均有对应 claim。
 
 完成写入后，仅回复：
 
-`深度分析已完成，报告与 AnalysisOutcome 已写入指定路径。`
+`深度分析已完成，报告、AnalysisOutcome 与结论台账已写入指定路径。`

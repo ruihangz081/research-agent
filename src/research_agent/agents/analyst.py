@@ -132,10 +132,12 @@ async def run_analysis(state: "ProjectState") -> Path:
     )
     analysis_path = state.project_dir / config.FILE_ANALYSIS
     outcome_path = state.project_dir / config.FILE_ANALYSIS_OUTCOME
+    claims_path = state.project_dir / config.FILE_CLAIMS
 
     # A rerun must not pass the gate with stale outputs from an earlier Agent4 run.
     analysis_path.unlink(missing_ok=True)
     outcome_path.unlink(missing_ok=True)
+    claims_path.unlink(missing_ok=True)
 
     system_prompt = _load_analyst_prompt()
     system_prompt += plan_prompt_context(state)
@@ -146,6 +148,7 @@ async def run_analysis(state: "ProjectState") -> Path:
         "{validation_report_path}": str(validation_report_path or "（无）"),
         "{analysis_path}": str(analysis_path),
         "{analysis_outcome_path}": str(outcome_path),
+        "{claims_path}": str(claims_path),
         "{N}": str(state.collect_round),
     }
     for k, v in replacements.items():
@@ -159,6 +162,7 @@ async def run_analysis(state: "ProjectState") -> Path:
         f"- 验证报告：`{validation_report_path}`\n"
         f"- 分析报告输出路径：`{analysis_path}`\n"
         f"- 分析结果输出路径：`{outcome_path}`\n"
+        f"- 结论台账输出路径：`{claims_path}`\n"
         f"- 研究需求清单：`{state.project_dir / config.FILE_RESEARCH_REQUIREMENTS}`\n"
     )
 
@@ -202,5 +206,7 @@ async def run_analysis(state: "ProjectState") -> Path:
 
     if not analysis_path.exists():
         raise RuntimeError(f"Agent4 未能生成分析报告：{analysis_path}")
+    if not claims_path.exists():
+        raise RuntimeError(f"Agent4 未能生成结论台账：{claims_path}")
     console.print(f"\n[green]✓ 深度分析完成：{analysis_path.name}[/green]")
     return analysis_path

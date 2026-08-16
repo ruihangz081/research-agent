@@ -1,4 +1,5 @@
 """Project state persistence tests using real dependencies."""
+import json
 from pathlib import Path
 
 import pytest
@@ -411,6 +412,26 @@ async def test_cli_host_drives_same_state_machine_to_done(
         outcome_path = target.project_dir / config.FILE_ANALYSIS_OUTCOME
         outcome_path.write_text(
             '{"schema_version":"1.0","status":"completed","gap_requests":[]}',
+            encoding="utf-8",
+        )
+        claims_path = target.project_dir / config.FILE_CLAIMS
+        claims_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "claims": [
+                        {
+                            "claim_id": "c1",
+                            "question_id": "q1",
+                            "kind": "fact",
+                            "importance": "critical",
+                            "text": "Revenue reached 42 million",
+                            "supporting_evidence_ids": ["ev-state-machine"],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
         return path

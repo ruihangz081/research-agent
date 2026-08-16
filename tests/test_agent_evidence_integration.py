@@ -274,6 +274,26 @@ async def test_formatter_reuses_report_and_surfaces_typeset_failure(
         f"# Report\n\nRevenue reached 42 million {render_citation(evidence, source)}\n",
         encoding="utf-8",
     )
+    claims = state.project_dir / config.FILE_CLAIMS
+    claims.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "claims": [
+                    {
+                        "claim_id": "c1",
+                        "question_id": "q1",
+                        "kind": "fact",
+                        "importance": "critical",
+                        "text": "Revenue reached 42 million",
+                        "supporting_evidence_ids": ["ev-typeset"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     manifest = state.project_dir / config.FILE_CHART_MANIFEST
     manifest.write_text('{"version": 1, "charts": []}', encoding="utf-8")
 

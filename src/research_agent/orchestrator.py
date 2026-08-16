@@ -35,6 +35,7 @@ from .agent_loop import AgentLoopStuckError
 from .agents import analyst, collector, formatter, strategist, validator
 from .research_plan import ResearchPlanError
 from .sources.citations import audit_analysis_citations
+from .sources.claims import ClaimsError, load_claims_file, validate_claims
 from .sources.runtime import get_service
 from .state import ProjectState, Stage
 
@@ -327,8 +328,31 @@ def _validate_analysis_transition(
         state.mark_failure("Agent4·来源引用审计", str(error))
         raise error
 
+    # R4：结论台账门禁。重要结论必须有 SUPPORTED 证据支撑，且覆盖全部必答问题。
+    try:
+        claims = load_claims_file(state.project_dir / config.FILE_CLAIMS)
+    except ClaimsError as exc:
+        state.notes["analysis_claim_audit_errors"] = [str(exc)]
+        error = AnalysisBoundaryError(str(exc))
+        state.mark_failure("Agent4·结论台账门禁", str(error))
+        raise error from exc
+    claim_errors = validate_claims(claims, state.project_dir, service.repository)
+    if claim_errors:
+        state.notes["analysis_claim_audit_errors"] = claim_errors
+        error = AnalysisBoundaryError(
+            "Agent4 结论台账门禁失败：" + "; ".join(claim_errors)
+        )
+        state.mark_failure("Agent4·结论台账门禁", str(error))
+        raise error
+
+    state.notes["analysis_claims"] = [
+        {"claim_id": item.claim_id, "question_id": item.question_id,
+         "importance": item.importance, "text": item.text}
+        for item in claims.claims
+    ]
     state.notes.pop("analysis_gap_requests", None)
     state.notes.pop("analysis_citation_audit_errors", None)
+    state.notes.pop("analysis_claim_audit_errors", None)
     state.save()
     return outcome
 

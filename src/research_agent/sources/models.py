@@ -4,7 +4,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from .enums import BlockType, JobStatus, LocatorType, SourceStatus, VerificationStatus
 
@@ -197,6 +203,64 @@ class EvidenceRecord(BaseModel):
     verification_notes: str | None = None
     confidence: float = Field(default=0, ge=0, le=1)
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class Claim(BaseModel):
+    """Agent4 产出的结构化结论（R4）。
+
+    每条 Claim 与分析报告中的一句结论一一对应：`text` 必须与报告正文逐字一致。
+    `critical` 结论必须有至少一条支持证据，且其 `question_id` 必须来自研究需求清单。
+    """
+
+    claim_id: str
+    question_id: str
+    kind: Literal["fact", "derivation", "judgment"]
+    importance: Literal["critical", "major", "minor"] = "major"
+    text: str = Field(min_length=1)
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
+    contradicting_evidence_ids: list[str] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "medium"
+
+    @field_validator("claim_id", "question_id")
+    @classmethod
+    def _identifier_is_present(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("claim_id 与 question_id 不能为空")
+        return cleaned
+
+    @field_validator("text")
+    @classmethod
+    def _text_is_present(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("结论文本不能为空")
+        return cleaned
+
+    @model_validator(mode="after")
+    def _critical_claim_must_have_support(self) -> "Claim":
+        if self.importance == "critical" and not self.supporting_evidence_ids:
+            raise ValueError("critical 结论必须至少有一条支持证据")
+        return self
+
+
+class ClaimsFile(BaseModel):
+    """`04_claims.json`：Agent4 结论台账的顶层容器。"""
+
+    schema_version: Literal["1.0"] = "1.0"
+    claims: list[Claim]
+
+    @model_validator(mode="after")
+    def _claim_ids_are_unique(self) -> "ClaimsFile":
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for item in self.claims:
+            if item.claim_id in seen:
+                duplicates.append(item.claim_id)
+            seen.add(item.claim_id)
+        if duplicates:
+            raise ValueError(f"claim_id 重复：{', '.join(sorted(set(duplicates)))}")
+        return self
 
 
 class Job(BaseModel):

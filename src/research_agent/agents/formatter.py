@@ -23,6 +23,7 @@ from ..sources.citations import (
     validate_report_citations,
     validate_report_text_citations,
 )
+from ..sources.claims import ClaimsError, load_claims_file
 from ..sources.enums import VerificationStatus
 from ..sources.models import EvidenceRecord, SourceAsset
 from ..tools import default_registry
@@ -99,6 +100,32 @@ def _audit_final_report_citations(
         if len(errors) > 10:
             details += f"; 另有 {len(errors) - 10} 项"
         raise RuntimeError(f"Agent5 引用审计失败：{details}")
+
+
+def _audit_final_report_claims(state: "ProjectState", report_path: Path) -> None:
+    """R4 门禁③：终稿必须保留 Agent4 产出的 critical 结论文本。
+
+    分析阶段已经有结论且通过门禁①，但排版阶段可能遗漏、合并或改写结论。
+    这里对每条 `critical` claim 检查其文本是否仍出现在终稿正文中，防止结论
+    在交付前的最后一步丢失。
+    """
+    claims_path = state.project_dir / config.FILE_CLAIMS
+    try:
+        claims = load_claims_file(claims_path)
+    except ClaimsError as exc:
+        raise RuntimeError(f"Agent5 结论保留审计失败：{exc}") from exc
+
+    report_text = report_path.read_text(encoding="utf-8")
+    missing = [
+        item.claim_id
+        for item in claims.claims
+        if item.importance == "critical" and item.text.strip() not in report_text
+    ]
+    if missing:
+        raise RuntimeError(
+            "Agent5 终稿缺少 Agent4 的 critical 结论（结论在排版阶段丢失）："
+            + ", ".join(missing)
+        )
 
 
 def _load_formatter_prompt() -> str:
@@ -240,6 +267,7 @@ async def run_formatting(state: "ProjectState") -> Path:
     # Audit the authored report before adding the generated evidence appendix;
     # otherwise appendix citations could mask a report body with no valid citations.
     _audit_final_report_citations(final_report_path, supported, sources)
+    _audit_final_report_claims(state, final_report_path)
     _finalize_evidence_appendix(state, final_report_path)
     state.final_report_path = str(final_report_path)
     state.chart_manifest_path = str(chart_manifest_path)
