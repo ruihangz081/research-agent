@@ -4,7 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>溯光 Lumitrace · 本地多智能体调研工作台</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260720-home-wordmark" />
+    <script>document.documentElement.classList.add("motion-enabled");</script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260817-landing-art-4" />
+    <script src="/static/landing.js?v=20260817-landing-art-4" defer></script>
   </head>
   <body class="landing-body">
     <header class="landing-header">
@@ -13,36 +15,81 @@
         <span><strong>溯光</strong><small>Lumitrace</small></span>
       </a>
       <nav class="landing-nav" aria-label="首页导航">
-        <a href="#product">产品</a>
+        <a href="#product" aria-current="page">产品</a>
         <a href="#workflow">流程</a>
         <a href="/research">工作台</a>
         <a href="/results">成果</a>
         <a href="/settings">设置</a>
       </nav>
-      <a class="button primary landing-start" href="/research">→ 开始调研</a>
+      <a class="button primary landing-start" href="/research"><span class="button-icon" aria-hidden="true">→</span> 开始调研</a>
     </header>
 
     <main>
       <section class="landing-hero">
-        <div class="hero-orbit orbit-one"></div>
-        <div class="hero-orbit orbit-two"></div>
-        <span class="hero-orb orb-one"></span>
-        <span class="hero-orb orb-two"></span>
-        <span class="hero-orb orb-three"></span>
+        <div class="hero-orbit orbit-one" data-parallax-depth="0.2"></div>
+        <div class="hero-orbit orbit-two" data-parallax-depth="0.14"></div>
+        <div class="hero-orbit orbit-three" data-parallax-depth="0.1"></div>
+        <span class="hero-orb orb-one" data-parallax-depth="1"></span>
+        <span class="hero-orb orb-two" data-parallax-depth="0.55"></span>
+        <span class="hero-orb orb-three" data-parallax-depth="0.75"></span>
+        <span class="hero-light-field" aria-hidden="true"></span>
+        <span class="hero-ripple-field" aria-hidden="true"></span>
+        <svg class="hero-ribbons" viewBox="0 0 1672 430" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="ribbonPurple" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#7f69ed"/><stop offset="1" stop-color="#8cbcf3"/></linearGradient>
+            <linearGradient id="ribbonBlue" x1="1" y1="0" x2="0" y2="1"><stop stop-color="#63bfe9"/><stop offset=".58" stop-color="#6d8cef"/><stop offset="1" stop-color="#9a71ec"/></linearGradient>
+            <filter id="ribbonBlur"><feGaussianBlur stdDeviation="5"/></filter>
+          </defs>
+          <g class="ribbon-layer ribbon-a" filter="url(#ribbonBlur)">
+            <path d="M-120 92C160 125 300 363 875 390" stroke="url(#ribbonPurple)" stroke-width="34"/>
+            <path d="M1790 28C1455 42 1340 345 805 396" stroke="url(#ribbonBlue)" stroke-width="38"/>
+          </g>
+          <g class="ribbon-layer ribbon-b">
+            <path d="M-100 150C185 190 354 382 910 402" stroke="url(#ribbonPurple)" stroke-width="12"/>
+            <path d="M1780 78C1490 105 1310 375 760 408" stroke="url(#ribbonBlue)" stroke-width="14"/>
+          </g>
+          <g class="ribbon-layer ribbon-c">
+            <path d="M-80 205C240 240 390 398 955 410" stroke="#b2a1f2" stroke-width="4"/>
+            <path d="M1760 132C1460 158 1260 397 700 414" stroke="#8fccef" stroke-width="5"/>
+          </g>
+        </svg>
+        <div class="hero-wave-layer" aria-hidden="true"><span></span></div>
         <div class="hero-content">
           <span class="hero-kicker"><i class="status-dot running"></i> LOCAL MULTI-AGENT RESEARCH SYSTEM <b>✦</b></span>
-          <h1>Lumitrace</h1>
+          <h1 data-text="Lumitrace">Lumitrace</h1>
           <p class="hero-subtitle">面向行业研究的本地多智能体调研工作台</p>
           <div id="workflow" class="hero-flow" aria-label="研究流程">
             <span>规划</span><i>→</i><span>搜集</span><i>→</i><span>验证</span><i>→</i><span>补采</span><i>→</i><span>分析</span><i>→</i><span>报告生成</span>
           </div>
           <div class="hero-actions">
-            <a class="button primary" href="/research">→ 进入工作台</a>
-            <a class="button secondary" href="#product">◎ 查看能力</a>
-            <a class="button secondary" href="/research?new=1">＋ 新建调研</a>
+            <a class="button primary" href="/research"><span class="button-icon" aria-hidden="true">→</span> 进入工作台</a>
+            <a class="button secondary" href="#product"><span class="button-icon" aria-hidden="true">◎</span> 查看能力</a>
+            <a class="button secondary" href="/research?new=1"><span class="button-icon" aria-hidden="true">＋</span> 新建调研</a>
           </div>
-          <div class="hero-trust"><span>♢ 可追溯证据</span><span>·</span><span>可信来源</span><span>·</span><span>可复用成果</span></div>
+          <div class="hero-trust"><span>♢ 可追溯证据</span><span>·</span><span>可信来源</span><span>·</span><span>可复用成果</span><span>·</span><span>隐私安全本地化</span></div>
         </div>
+        <section class="hero-capabilities" aria-label="核心能力">
+          <article class="hero-capability">
+            <span class="capability-glyph glyph-shield" aria-hidden="true"></span>
+            <span><strong>可信研究内核</strong><small>TRUSTED RESEARCH</small><p>可验证、可溯源的研究证据链</p></span>
+          </article>
+          <article class="hero-capability">
+            <span class="capability-glyph glyph-loop" aria-hidden="true"></span>
+            <span><strong>多智能体协同</strong><small>MULTI-AGENT LOOP</small><p>专业智能体协同完成复杂调研</p></span>
+          </article>
+          <article class="hero-capability featured">
+            <span class="capability-glyph glyph-cube" aria-hidden="true"></span>
+            <span><strong>本地安全运行</strong><small>LUMITRACE</small><p>数据不出本地，安全可控</p></span>
+          </article>
+          <article class="hero-capability">
+            <span class="capability-glyph glyph-shield" aria-hidden="true"></span>
+            <span><strong>可信研究内核</strong><small>TRUSTED RESEARCH</small><p>可验证、可溯源的研究证据链</p></span>
+          </article>
+          <article class="hero-capability">
+            <span class="capability-glyph glyph-loop" aria-hidden="true"></span>
+            <span><strong>多智能体协同</strong><small>MULTI-AGENT LOOP</small><p>专业智能体协同完成复杂调研</p></span>
+          </article>
+        </section>
       </section>
 
       <div class="landing-marquee" aria-hidden="true">
