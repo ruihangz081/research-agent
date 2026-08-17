@@ -9,23 +9,18 @@ Turn verified analysis into a publication-ready Chinese brokerage-style report w
 
 ## Workflow
 
-1. Read the outline, verified analysis, source list, and validation report.
-2. Read all references in this skill before writing the final report:
-   - `references/report-structure.md`
+1. Read the verified Agent4 analysis.
+2. Read the chart-specific references before writing the chart manifest:
    - `references/chart-rules.md`
-   - `references/table-rules.md`
-   - `references/china-style.md`
    - `references/quality-checklist.md`
 3. Preserve every deterministic evidence citation exactly. Do not invent facts, data, sources, ratings, or forecasts.
-4. Write the complete final Markdown report and a separate `05_chart_manifest.json`.
-5. Use `{{chart:<id>}}` on its own line where each chart belongs. Never emit ASCII charts, executable code, raw SVG, TikZ, or “建议插入图表”.
+4. Treat Agent4 Markdown as immutable. Write only `05_chart_manifest.json`; the formatter copies the analysis verbatim and inserts chart placeholders deterministically.
+5. Set `placement_after` to one exact, unique full line from Agent4 Markdown, preferably a heading. The formatter inserts `{{chart:<id>}}` after it. Never emit ASCII charts, executable code, raw SVG, TikZ, or “建议插入图表”.
 6. Prefer a table when readers need exact values; use a chart only when it materially improves comparison or pattern recognition.
-7. Give every chart and table a conclusion-led title, unit, as-of date, source, and any necessary note.
-8. Run the delivery checklist before finishing. Leave an explicit data-gap statement when evidence is insufficient.
+7. Give every chart a conclusion-led title, unit, as-of date, source, and any necessary note.
+8. Run the delivery checklist before finishing. Omit a chart when Agent4 lacks sufficient verified data.
 
 ## Output Contract
-
-Write valid Markdown suitable for Pandoc. Keep headings at three levels or fewer, use GFM pipe tables, and keep chart placeholders outside tables and lists.
 
 Write a JSON manifest with this shape:
 
@@ -40,6 +35,7 @@ Write a JSON manifest with this shape:
       "unit": "亿元",
       "as_of_date": "2026-07-19",
       "source": "公开资料，Research Agent 整理",
+      "placement_after": "## 市场规模保持稳健增长",
       "labels": ["2023", "2024", "2025E"],
       "series": [
         {
@@ -58,6 +54,7 @@ Use only numeric values already present in verified input. Supported determinist
 ## Boundaries
 
 - Do not conduct new research or revise Agent4 conclusions.
+- Do not summarize, compress, reorder, or append evidence material to Agent4 Markdown.
 - Do not convert deterministic source tokens into fabricated footnote numbers.
 - Do not place URLs, file paths, code, or expressions in chart data.
 - Do not use decorative charts, 3D effects, gradients, gauges, or pie charts with many categories.

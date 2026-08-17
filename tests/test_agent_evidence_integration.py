@@ -6,8 +6,8 @@ import pytest
 from research_agent import config
 from research_agent.agents import formatter
 from research_agent.agents.formatter import (
-    _can_reuse_generated,
-    _finalize_evidence_appendix,
+    _can_reuse_chart_manifest,
+    _compose_final_report_from_analysis,
     run_formatting,
 )
 from research_agent.agents.validator import ValidationFeedback
@@ -262,13 +262,16 @@ async def test_formatter_reuses_report_and_surfaces_typeset_failure(
         verification_status=VerificationStatus.SUPPORTED, confidence=1,
     )
     service.record_evidence(evidence)
-    for attribute, filename in (
-        ("analysis_path", config.FILE_ANALYSIS),
-        ("sources_final_path", config.FILE_SOURCES_FINAL),
-    ):
-        path = state.project_dir / filename
-        path.write_text("# input\n", encoding="utf-8")
-        setattr(state, attribute, str(path))
+    analysis = state.project_dir / config.FILE_ANALYSIS
+    analysis_text = (
+        f"# Report\n\nRevenue reached 42 million "
+        f"{render_citation(evidence, source)}\n"
+    )
+    analysis.write_text(analysis_text, encoding="utf-8")
+    state.analysis_path = str(analysis)
+    sources_final = state.project_dir / config.FILE_SOURCES_FINAL
+    sources_final.write_text("# input\n", encoding="utf-8")
+    state.sources_final_path = str(sources_final)
     report = state.project_dir / config.FILE_FINAL_REPORT
     report.write_text(
         f"# Report\n\nRevenue reached 42 million {render_citation(evidence, source)}\n",
@@ -311,22 +314,59 @@ async def test_formatter_reuses_report_and_surfaces_typeset_failure(
 
     assert state.final_report_path == str(report)
     assert state.notes["latex_typeset_error"] == "layout failed"
+    assert report.read_text(encoding="utf-8") == analysis_text
+    assert "可追溯证据索引" not in report.read_text(encoding="utf-8")
     repository.close()
 
 
 def test_formatter_does_not_reuse_invalid_chart_manifest(tmp_path: Path) -> None:
     analysis = tmp_path / "analysis.md"
-    report = tmp_path / "report.md"
     manifest = tmp_path / "manifest.json"
     analysis.write_text("# Analysis\n", encoding="utf-8")
-    report.write_text("# Report\n", encoding="utf-8")
     manifest.write_text('{"version": 1, "charts": [{"note": "bad "quote""}]}', encoding="utf-8")
 
-    assert _can_reuse_generated(report, manifest, analysis) is False
+    assert _can_reuse_chart_manifest(manifest, analysis) is False
+
+
+def test_formatter_does_not_reuse_legacy_manifest_without_anchor(
+    tmp_path: Path,
+) -> None:
+    analysis = tmp_path / "analysis.md"
+    manifest = tmp_path / "manifest.json"
+    analysis.write_text("# Analysis\n", encoding="utf-8")
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "charts": [
+                    {
+                        "id": "trend",
+                        "type": "line",
+                        "title": "趋势",
+                        "unit": "%",
+                        "as_of_date": "2026-08-17",
+                        "source": "Research Agent 整理",
+                        "labels": ["2026"],
+                        "series": [
+                            {
+                                "name": "增速",
+                                "values": [5],
+                                "value_kind": ["actual"],
+                            }
+                        ],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert _can_reuse_chart_manifest(manifest, analysis) is False
 
 
 @pytest.mark.anyio
-async def test_record_tool_and_formatter_use_exact_evidence(tmp_path: Path, monkeypatch) -> None:
+async def test_record_tool_uses_exact_evidence(tmp_path: Path, monkeypatch) -> None:
     state, repository, service, source, chunk = prepared_state(tmp_path, monkeypatch)
     result = json.loads(await project_sources.record_project_evidence(
         state.project_dir.name, "q1", "Revenue reached 42 million", source.source_id,
@@ -334,10 +374,82 @@ async def test_record_tool_and_formatter_use_exact_evidence(tmp_path: Path, monk
         chunk.locators[0].model_dump_json(),
     ))
     assert result["source_id"] == source.source_id
-    report = state.project_dir / config.FILE_FINAL_REPORT
-    report.write_text("# Report\n\nRevenue reached 42 million.", encoding="utf-8")
-    _finalize_evidence_appendix(state, report)
-    rendered = report.read_text(encoding="utf-8")
-    assert "## 可追溯证据索引" in rendered
-    assert f"[src:{source.source_id}:v1" in rendered
     repository.close()
+
+
+def test_formatter_preserves_agent4_text_and_only_inserts_charts(tmp_path: Path) -> None:
+    analysis = tmp_path / "04_analysis.md"
+    report = tmp_path / "05_final_report.md"
+    analysis_text = "# 行业分析\n\n开篇结论。\n\n## 供需格局\n\n供给仍然偏紧。\n"
+    analysis.write_text(analysis_text, encoding="utf-8")
+    manifest = formatter.ChartManifest.model_validate(
+        {
+            "version": 1,
+            "charts": [
+                {
+                    "id": "supply_trend",
+                    "type": "line",
+                    "title": "供给增速保持低位",
+                    "unit": "%",
+                    "as_of_date": "2026-08-17",
+                    "source": "公开资料，Research Agent 整理",
+                    "placement_after": "## 供需格局",
+                    "labels": ["2025", "2026E"],
+                    "series": [
+                        {
+                            "name": "增速",
+                            "values": [8, 5],
+                            "value_kind": ["actual", "forecast"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    _compose_final_report_from_analysis(analysis, report, manifest)
+    formatter._audit_composed_report(analysis, report, manifest)
+
+    assert report.read_text(encoding="utf-8") == (
+        "# 行业分析\n\n开篇结论。\n\n## 供需格局\n\n"
+        "{{chart:supply_trend}}\n\n供给仍然偏紧。\n"
+    )
+
+    report.write_text(
+        report.read_text(encoding="utf-8").replace("供给仍然偏紧", "供给已经宽松"),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="Agent4 正文不一致"):
+        formatter._audit_composed_report(analysis, report, manifest)
+
+
+def test_formatter_rejects_chart_without_exact_agent4_anchor(tmp_path: Path) -> None:
+    analysis = tmp_path / "04_analysis.md"
+    report = tmp_path / "05_final_report.md"
+    analysis.write_text("# 行业分析\n", encoding="utf-8")
+    manifest = formatter.ChartManifest.model_validate(
+        {
+            "version": 1,
+            "charts": [
+                {
+                    "id": "supply_trend",
+                    "type": "line",
+                    "title": "供给增速保持低位",
+                    "unit": "%",
+                    "as_of_date": "2026-08-17",
+                    "source": "公开资料，Research Agent 整理",
+                    "labels": ["2025"],
+                    "series": [
+                        {
+                            "name": "增速",
+                            "values": [8],
+                            "value_kind": ["actual"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ValueError, match="placement_after"):
+        _compose_final_report_from_analysis(analysis, report, manifest)

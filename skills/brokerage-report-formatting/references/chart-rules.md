@@ -15,6 +15,7 @@ Select charts by analytical intent:
 Rules:
 
 - Use one chart for one principal conclusion.
+- Set `placement_after` to one exact, unique full line from Agent4 Markdown; prefer the relevant heading.
 - Prefer 1-3 charts per quantitative chapter and no more than the configured report maximum.
 - Use conclusion-led titles, not neutral labels such as “市场规模图”.
 - Provide `unit`, ISO `as_of_date`, and a human-readable `source` for every chart.

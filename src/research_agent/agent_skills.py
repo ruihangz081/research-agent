@@ -10,10 +10,7 @@ from . import config
 _SAFE_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _ALLOWED_SKILLS = {"brokerage-report-formatting"}
 _FORMATTER_REFERENCES = (
-    "report-structure.md",
     "chart-rules.md",
-    "table-rules.md",
-    "china-style.md",
     "quality-checklist.md",
 )
 

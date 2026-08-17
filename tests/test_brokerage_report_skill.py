@@ -6,10 +6,13 @@ from research_agent import config
 from research_agent.agent_skills import load_project_skill
 
 
-def test_brokerage_skill_loads_all_required_references() -> None:
+def test_brokerage_skill_loads_only_chart_specific_references() -> None:
     skill = load_project_skill("brokerage-report-formatting")
     assert skill.root == config.PROJECT_SKILLS_DIR / "brokerage-report-formatting"
-    assert len(skill.references) == 5
+    assert [name for name, _content in skill.references] == [
+        "chart-rules.md",
+        "quality-checklist.md",
+    ]
     context = skill.prompt_context()
     assert "chart-rules.md" in context
     assert "Delivery Checklist" in context

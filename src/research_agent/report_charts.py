@@ -65,6 +65,7 @@ class ChartSpec(BaseModel):
     unit: str = Field(min_length=1, max_length=40)
     as_of_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     source: str = Field(min_length=1, max_length=300)
+    placement_after: str | None = Field(default=None, max_length=500)
     labels: list[str] = Field(min_length=1)
     series: list[ChartSeries] = Field(min_length=1)
     note: str = Field(default="", max_length=300)
@@ -90,6 +91,14 @@ class ChartSpec(BaseModel):
         if "://" in lowered or "javascript:" in lowered or "file:" in lowered:
             raise ValueError("图表文本不得包含 URL 或文件资源")
         return value.strip()
+
+    @field_validator("placement_after")
+    @classmethod
+    def normalize_placement_after(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
 
     @model_validator(mode="after")
     def validate_shape(self) -> "ChartSpec":

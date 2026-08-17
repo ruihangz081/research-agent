@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -14,20 +15,15 @@ from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..agent_skills import load_project_skill
 from ..llm import LLMClient
-from ..report_charts import load_chart_manifest
+from ..report_charts import ChartManifest, load_chart_manifest
 from ..report_layout import generate_typeset_artifacts
-from ..research_plan import ResearchPlanError, plan_prompt_context, require_plan
+from ..research_plan import ResearchPlanError, require_plan
 from ..sources.runtime import get_service
-from ..sources.citations import (
-    render_citation,
-    validate_report_citations,
-    validate_report_text_citations,
-)
+from ..sources.citations import validate_report_citations, validate_report_text_citations
 from ..sources.claims import ClaimsError, load_claims_file
 from ..sources.enums import VerificationStatus
 from ..sources.models import EvidenceRecord, SourceAsset
 from ..tools import default_registry
-from .source_context import source_context
 
 if TYPE_CHECKING:
     from ..state import ProjectState
@@ -72,21 +68,6 @@ def _require_delivery_evidence(
     return supported, sources
 
 
-def _finalize_evidence_appendix(state: "ProjectState", report_path: Path) -> None:
-    supported, sources = _require_delivery_evidence(state)
-    report = report_path.read_text(encoding="utf-8")
-    appendix = ["", "---", "", "## 可追溯证据索引", ""]
-    for item in supported:
-        source = sources[item.source_id]
-        citation = render_citation(item, source)
-        origin = f"（[原文]({source.origin_url})）" if source.origin_url else ""
-        appendix.append(f"- {citation} **{item.claim}** — {item.excerpt}{origin}")
-    marker = "## 可追溯证据索引"
-    if marker in report:
-        report = report.split(marker, 1)[0].rstrip()
-    report_path.write_text(report.rstrip() + "\n" + "\n".join(appendix) + "\n", encoding="utf-8")
-
-
 def _audit_final_report_citations(
     report_path: Path,
     supported: list[EvidenceRecord],
@@ -102,24 +83,30 @@ def _audit_final_report_citations(
         raise RuntimeError(f"Agent5 引用审计失败：{details}")
 
 
-def _audit_final_report_claims(state: "ProjectState", report_path: Path) -> None:
-    """R4 门禁③：终稿必须保留 Agent4 产出的 critical 结论文本。
-
-    分析阶段已经有结论且通过门禁①，但排版阶段可能遗漏、合并或改写结论。
-    这里对每条 `critical` claim 检查其文本是否仍出现在终稿正文中，防止结论
-    在交付前的最后一步丢失。
-    """
-    claims_path = state.project_dir / config.FILE_CLAIMS
+def _audit_final_report_claims(
+    state: "ProjectState",
+    report_path: Path,
+    *,
+    analysis_path: Path | None = None,
+) -> None:
+    """兼容旧调用方；生产交付使用更强的正文逐字保真审计。"""
     try:
-        claims = load_claims_file(claims_path)
+        claims = load_claims_file(state.project_dir / config.FILE_CLAIMS)
     except ClaimsError as exc:
         raise RuntimeError(f"Agent5 结论保留审计失败：{exc}") from exc
 
     report_text = report_path.read_text(encoding="utf-8")
+    baseline_text = (
+        analysis_path.read_text(encoding="utf-8")
+        if analysis_path is not None
+        else None
+    )
     missing = [
         item.claim_id
         for item in claims.claims
-        if item.importance == "critical" and item.text.strip() not in report_text
+        if item.importance == "critical"
+        and (baseline_text is None or item.text.strip() in baseline_text)
+        and item.text.strip() not in report_text
     ]
     if missing:
         raise RuntimeError(
@@ -128,28 +115,113 @@ def _audit_final_report_claims(state: "ProjectState", report_path: Path) -> None
         )
 
 
+def _audit_composed_report(
+    analysis_path: Path,
+    report_path: Path,
+    manifest: ChartManifest,
+) -> None:
+    """确认终稿确实是 Agent4 正文逐字加上图表占位符，没有别的改动。
+
+    生产交付以此取代原来的"终稿必须保留 critical 结论"审计。那条审计在新架构下已
+    结构上无法触发：终稿由 `_compose_final_report_from_analysis` 逐字复制正文、
+    只在整行之间插入占位符，因此"在正文里"必然推出"在终稿里"，判定条件恒为空集。
+
+    真正需要防的是 compose 本身被改坏——一旦它开始丢行、改行或重排，交付物就会
+    悄悄偏离已通过 Agent4 门禁的正文，而没有任何检查会发现。所以改为反向校验：
+    把终稿里的占位符行剔除后，必须与正文**逐字节相同**。
+
+    结构化结论台账继续由 Agent4 阶段单独校验；Agent5 不再把台账内容作为
+    补丁注入阅读版报告。
+    """
+    analysis = analysis_path.read_text(encoding="utf-8")
+    report = report_path.read_text(encoding="utf-8")
+    expected_placeholders = {f"{{{{chart:{chart.id}}}}}" for chart in manifest.charts}
+
+    surplus: list[str] = []
+    residual: list[str] = []
+    for line in report.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped in expected_placeholders:
+            expected_placeholders.discard(stripped)
+            continue
+        if not stripped and not analysis:
+            continue
+        residual.append(line)
+
+    # 占位符插入时前后各带一个空行，剔除后会多出成对空行：按正文原样重建做整体比对，
+    # 避免逐行做启发式判断。
+    rebuilt = "".join(residual)
+    if rebuilt != analysis:
+        # 去掉占位符自带的空行后再比一次，仍不一致才算真的偏离。
+        collapsed = re.sub(r"\n{3,}", "\n\n", rebuilt)
+        if collapsed != re.sub(r"\n{3,}", "\n\n", analysis):
+            raise RuntimeError(
+                "Agent5 终稿与 Agent4 正文不一致：终稿必须是正文逐字复制加图表占位符，"
+                "不得摘要、改写、重排或删行。"
+            )
+    if expected_placeholders:
+        surplus = sorted(expected_placeholders)
+        raise RuntimeError(
+            "Agent5 终稿缺少图表清单声明的占位符：" + ", ".join(surplus)
+        )
+
+
 def _load_formatter_prompt() -> str:
     return _PROMPT_FORMATTER.read_text(encoding="utf-8")
 
 
-def _can_reuse_generated(
-    final_report_path: Path,
+def _can_reuse_chart_manifest(
     chart_manifest_path: Path,
     analysis_path: Path,
 ) -> bool:
-    """Reuse Agent5 output only when both files are current and valid."""
+    """Reuse only a current manifest whose charts have deterministic anchors."""
     if not (
-        final_report_path.is_file()
-        and chart_manifest_path.is_file()
-        and final_report_path.stat().st_mtime >= analysis_path.stat().st_mtime
+        chart_manifest_path.is_file()
         and chart_manifest_path.stat().st_mtime >= analysis_path.stat().st_mtime
     ):
         return False
     try:
-        load_chart_manifest(chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS)
+        manifest = load_chart_manifest(
+            chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS
+        )
     except (ValueError, OSError):
         return False
-    return True
+    return all(chart.placement_after for chart in manifest.charts)
+
+
+def _compose_final_report_from_analysis(
+    analysis_path: Path,
+    final_report_path: Path,
+    manifest: ChartManifest,
+) -> None:
+    """Copy Agent4 verbatim and insert only deterministic chart placeholders."""
+    analysis = analysis_path.read_text(encoding="utf-8")
+    lines = analysis.splitlines(keepends=True)
+    insertions: dict[int, list[str]] = {}
+
+    for chart in manifest.charts:
+        anchor = chart.placement_after
+        if not anchor:
+            raise ValueError(f"chart {chart.id} 缺少 placement_after")
+        matches = [
+            index
+            for index, line in enumerate(lines)
+            if line.rstrip("\r\n") == anchor
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                f"chart {chart.id} 的 placement_after 必须逐字匹配 Agent4 中唯一一行："
+                f"当前匹配 {len(matches)} 行"
+            )
+        insertions.setdefault(matches[0], []).append(chart.id)
+
+    newline = "\r\n" if "\r\n" in analysis else "\n"
+    output: list[str] = []
+    for index, line in enumerate(lines):
+        output.append(line)
+        for chart_id in insertions.get(index, []):
+            output.append(f"{newline}{{{{chart:{chart_id}}}}}{newline}")
+    final_report_path.write_text("".join(output), encoding="utf-8")
 
 
 async def run_formatting(state: "ProjectState") -> Path:
@@ -165,27 +237,14 @@ async def run_formatting(state: "ProjectState") -> Path:
     # provenance, and retrying it only regenerates the same blocked artifacts.
     supported, sources = _require_delivery_evidence(state)
 
-    outline_path = Path(state.outline_path)
     analysis_path = Path(state.analysis_path)
-    sources_final_path = Path(state.sources_final_path)
-    validation_report_path = (
-        Path(state.validation_report_path)
-        if state.validation_report_path
-        else None
-    )
     final_report_path = state.project_dir / config.FILE_FINAL_REPORT
     chart_manifest_path = state.project_dir / config.FILE_CHART_MANIFEST
 
     skill = load_project_skill(config.REPORT_FORMATTING_SKILL)
     system_prompt = _load_formatter_prompt() + skill.prompt_context()
-    system_prompt += plan_prompt_context(state)
-    system_prompt += source_context(state)
     replacements = {
-        "{outline_path}": str(outline_path),
         "{analysis_path}": str(analysis_path),
-        "{sources_final_path}": str(sources_final_path),
-        "{validation_report_path}": str(validation_report_path or "（无）"),
-        "{final_report_path}": str(final_report_path),
         "{chart_manifest_path}": str(chart_manifest_path),
     }
     for k, v in replacements.items():
@@ -194,31 +253,16 @@ async def run_formatting(state: "ProjectState") -> Path:
     system_prompt += (
         f"\n\n## 当前项目参数\n"
         f"- 调研主题：**{state.topic}**\n"
-        f"- 提纲：`{outline_path}`\n"
         f"- 分析报告：`{analysis_path}`\n"
-        f"- 最终源清单：`{sources_final_path}`\n"
-        f"- 验证报告：`{validation_report_path}`\n"
-        f"- 最终报告输出路径：`{final_report_path}`\n"
         f"- 图表清单输出路径：`{chart_manifest_path}`\n"
         f"- 已加载排版 Skill：`{skill.name}`\n"
     )
-    output_preference = state.notes.get("output_preference", config.OUTPUT_PREFERENCE)
-    preference_instructions = {
-        "fast": "精简优先：突出摘要、关键证据和可执行结论，避免重复展开。",
-        "balanced": "平衡优先：兼顾阅读效率、分析深度与证据完整性。",
-        "deep": "深度优先：充分展开论证、反方证据、限制条件和来源细节。",
-    }
-    system_prompt += (
-        f"- 输出偏好：{output_preference}\n"
-        f"- 写作要求：{preference_instructions.get(output_preference, preference_instructions['balanced'])}\n"
-    )
-
     options = AgentOptions(
         system_prompt=system_prompt,
         model=config.LLM_MODEL,
-        allowed_tools=["Read", "Write", "ReadProjectSource", "InspectSourceEvidence"],
+        allowed_tools=["Read", "Write"],
         cwd=str(state.project_dir),
-        max_turns=40,
+        max_turns=12,
     )
 
     console.print(
@@ -229,11 +273,7 @@ async def run_formatting(state: "ProjectState") -> Path:
     async def _on_text(text: str) -> None:
         console.print(text, style="bright_white", end="")
 
-    reuse_generated = _can_reuse_generated(
-        final_report_path,
-        chart_manifest_path,
-        analysis_path,
-    )
+    reuse_generated = _can_reuse_chart_manifest(chart_manifest_path, analysis_path)
     if not reuse_generated:
         async with LLMClient(
             base_url=config.LLM_BASE_URL,
@@ -244,10 +284,9 @@ async def run_formatting(state: "ProjectState") -> Path:
         ) as client:
             await run_agent(
                 user_prompt=(
-                    f"请将深度分析排版为最终报告。"
-                    f"读取提纲、分析报告、源清单，"
-                    f"产出完整可独立阅读的行业调研报告到 `{final_report_path}`，"
-                    f"并把真实图表清单写到 `{chart_manifest_path}`。"
+                    f"请读取 Agent4 深度分析并设计能增强其表达的真实图表。"
+                    f"不要重写、摘要或压缩报告正文；只把图表清单写到 "
+                    f"`{chart_manifest_path}`。"
                 ),
                 options=options,
                 llm_client=client,
@@ -256,19 +295,17 @@ async def run_formatting(state: "ProjectState") -> Path:
             )
         console.print()
     else:
-        console.print("[dim]复用已生成的 Markdown 和图表清单，继续排版交付。[/dim]")
+        console.print("[dim]复用已生成的图表清单，重新从 Agent4 正文排版交付。[/dim]")
 
-    if not final_report_path.exists():
-        raise RuntimeError(f"Agent5 未能生成最终报告：{final_report_path}")
     if not chart_manifest_path.exists():
         raise RuntimeError(f"Agent5 未能生成图表清单：{chart_manifest_path}")
-    load_chart_manifest(chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS)
+    manifest = load_chart_manifest(
+        chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS
+    )
+    _compose_final_report_from_analysis(analysis_path, final_report_path, manifest)
 
-    # Audit the authored report before adding the generated evidence appendix;
-    # otherwise appendix citations could mask a report body with no valid citations.
     _audit_final_report_citations(final_report_path, supported, sources)
-    _audit_final_report_claims(state, final_report_path)
-    _finalize_evidence_appendix(state, final_report_path)
+    _audit_composed_report(analysis_path, final_report_path, manifest)
     state.final_report_path = str(final_report_path)
     state.chart_manifest_path = str(chart_manifest_path)
     state.save()

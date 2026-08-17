@@ -36,6 +36,17 @@ _REPORT_CITATION = re.compile(
 _EVIDENCE_ID = re.compile(r"\bev_([0-9a-f]{32})\b", re.IGNORECASE)
 _SOURCE_ID = re.compile(r"\bsrc_([0-9a-f]{32})\b", re.IGNORECASE)
 _INLINE_CODE = re.compile(r"`([^`\r\n]+)`")
+_PDF_HEADING = re.compile(r"^(#{2,6}[ \t]+)(.+)$", re.MULTILINE)
+_CHINESE_HEADING_NUMBER = re.compile(
+    r"^(?:第)?[〇零一二三四五六七八九十百]+[、.．][ \t]*"
+)
+_CHAPTER_HEADING_NUMBER = re.compile(
+    r"^(?:章节[ \t]*\d+(?:\.\d+)*|第[ \t]*\d+[ \t]*章)"
+    r"[ \t]*[：:、.．][ \t]*"
+)
+_ARABIC_HEADING_NUMBER = re.compile(
+    r"^(?:\d+(?:\.\d+)+[ \t]+|\d+[.．、)][ \t]*)"
+)
 _DISCLAIMER = "本报告基于公开信息和用户授权材料自动整理，仅供研究参考，不构成任何投资建议。"
 _PLAIN_TEXT_REPLACEMENTS = {
     "✅": "",
@@ -49,6 +60,11 @@ _PLAIN_TEXT_REPLACEMENTS = {
     "≥": ">=",
     "≤": "<=",
     "σ": "sigma",
+    "β": "beta",
+    "↔": " <-> ",
+    "週": "周",
+    "佈": "布",
+    "▪": "-",
     "①": "(1)",
     "②": "(2)",
     "③": "(3)",
@@ -158,6 +174,19 @@ def abbreviate_internal_ids_for_pdf(markdown: str) -> str:
     """Keep appendix identifiers traceable without forcing 32-char table cells."""
     abbreviated = _EVIDENCE_ID.sub(lambda match: f"E-{match.group(1)[:8]}", markdown)
     return _SOURCE_ID.sub(lambda match: f"S-{match.group(1)[:8]}", abbreviated)
+
+
+def normalize_heading_numbers_for_pdf(markdown: str) -> str:
+    """Remove author-written numbering where the PDF template numbers headings."""
+
+    def normalize(match: re.Match[str]) -> str:
+        marker, title = match.groups()
+        title = _CHINESE_HEADING_NUMBER.sub("", title, count=1)
+        title = _CHAPTER_HEADING_NUMBER.sub("", title, count=1)
+        title = _ARABIC_HEADING_NUMBER.sub("", title, count=1)
+        return marker + title
+
+    return _PDF_HEADING.sub(normalize, markdown)
 
 
 def normalize_markdown_for_pdf(markdown: str) -> str:
@@ -410,9 +439,11 @@ def build_report_latex(
     if not template.is_file() or not style.is_file() or not table_filter.is_file():
         raise RuntimeError("券商研报 LaTeX 模板资产不完整")
     shutil.copyfile(style, project_dir / style.name)
-    prepared = normalize_markdown_for_pdf(
-        replace_chart_placeholders(
-            _ensure_disclaimer(markdown), manifest, assets, target="latex"
+    prepared = normalize_heading_numbers_for_pdf(
+        normalize_markdown_for_pdf(
+            replace_chart_placeholders(
+                _ensure_disclaimer(markdown), manifest, assets, target="latex"
+            )
         )
     )
     prepared = render_report_citations_for_latex(prepared)

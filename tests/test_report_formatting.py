@@ -18,6 +18,7 @@ from research_agent.report_formatting import (
     generate_report_artifacts,
     make_latex_long_tokens_breakable,
     make_latex_source_ids_breakable,
+    normalize_heading_numbers_for_pdf,
     normalize_markdown_for_pdf,
     render_report_citations_for_html,
     render_report_citations_for_latex,
@@ -42,6 +43,7 @@ def test_latex_engine_keeps_xelatex_symlink_name(
 
 def test_pdf_normalization_replaces_unsupported_ratings_and_breaks_source_ids() -> None:
     assert normalize_markdown_for_pdf("★★★★☆ ≈ ❌") == "4/5 约 不确定"
+    assert normalize_markdown_for_pdf("β ↔ 52 週 公佈 ▪") == "beta  <->  52 周 公布 -"
     source_id = r"src\_1234567890abcdef1234567890abcdef"
     rendered = make_latex_source_ids_breakable(source_id)
     assert rendered.replace(r"\allowbreak{}", "") == source_id
@@ -132,6 +134,26 @@ def test_pdf_markdown_normalization_removes_unsafe_glyphs() -> None:
     assert "(1)" in normalized
     assert "5/5" in normalized
     assert not any(glyph in normalized for glyph in ("✅", "⚠", "🔴", "①", "⭐"))
+
+
+def test_pdf_heading_normalization_removes_only_manual_numbering() -> None:
+    markdown = (
+        "# 报告标题\n"
+        "## 三、章节 2：分板块深度分析与预测\n"
+        "### 2.1 游戏板块（国内 + 海外）\n"
+        "### 1. 本章研究问题\n"
+        "## 2026 年行业展望\n"
+        "## 附录 A：关键计算\n"
+    )
+
+    assert normalize_heading_numbers_for_pdf(markdown) == (
+        "# 报告标题\n"
+        "## 分板块深度分析与预测\n"
+        "### 游戏板块（国内 + 海外）\n"
+        "### 本章研究问题\n"
+        "## 2026 年行业展望\n"
+        "## 附录 A：关键计算\n"
+    )
 
 
 @pytest.mark.anyio
