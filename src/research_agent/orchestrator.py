@@ -37,7 +37,13 @@ from .research_plan import ResearchPlanError
 from .sources.citations import audit_analysis_citations
 from .sources.claims import ClaimsError, load_claims_file, validate_claims
 from .sources.runtime import get_service
-from .sources.tasks import blocking_pending_tasks, config_tasks_path, load_tasks_file
+from .sources.tasks import (
+    TasksError,
+    blocking_pending_tasks,
+    config_tasks_path,
+    ensure_analysis_gap_tasks,
+    load_tasks_file,
+)
 from .state import ProjectState, Stage
 
 console = Console()
@@ -272,6 +278,22 @@ def _assert_delivery_ready(state: ProjectState) -> None:
         state.save()
         state.mark_failure("研究需求清单", str(exc))
         raise
+    try:
+        tasks = load_tasks_file(config_tasks_path(state.project_dir))
+    except TasksError as exc:
+        state.notes["delivery_blocked_stage"] = "research_tasks"
+        state.mark_failure("补研任务台账", str(exc))
+        raise DeliveryBlockedError(str(exc)) from exc
+    blocking = blocking_pending_tasks(tasks)
+    if blocking:
+        task_ids = ", ".join(item.task_id for item in blocking)
+        error = DeliveryBlockedError(
+            f"交付前补研任务门槛阻断：critical 任务未完成：{task_ids}。Agent5 未启动。"
+        )
+        state.notes["delivery_blocked_stage"] = "research_tasks"
+        state.notes["pending_critical_tasks"] = [item.task_id for item in blocking]
+        state.mark_failure("补研任务门禁", str(error))
+        raise error
     gate = service.quality_gate(project_id, requirements)
     state.notes["research_question_coverage"] = gate.coverage
     if not gate.passed:
@@ -325,6 +347,16 @@ def _validate_analysis_transition(
 
     if outcome.status == analyst.AnalysisStatus.NEEDS_MORE_RESEARCH:
         gaps = [request.model_dump() for request in outcome.gap_requests]
+        try:
+            ensure_analysis_gap_tasks(
+                state,
+                gaps,
+                round_idx=max(1, state.collect_round),
+            )
+        except TasksError as exc:
+            error = AnalysisBoundaryError(str(exc))
+            state.mark_failure("Agent4·补研任务门禁", str(error))
+            raise error from exc
         state.notes["analysis_gap_requests"] = gaps
         summary = "; ".join(
             f"{item['question_id']}: {item['reason']}（需要：{item['needed_evidence']}）"
@@ -352,7 +384,8 @@ def _validate_analysis_transition(
         state.mark_failure("Agent4·来源引用审计", str(error))
         raise error
 
-    # R4：结论台账门禁。重要结论必须有 SUPPORTED 证据支撑，且覆盖全部必答问题。
+    # R4：结论台账门禁。重要结论必须有 SUPPORTED 证据支撑，覆盖全部必答问题，
+    # 且每条结论都能对应到分析报告正文——台账是正文的机读表达，不是额外的结论来源。
     try:
         claims = load_claims_file(state.project_dir / config.FILE_CLAIMS)
     except ClaimsError as exc:
@@ -360,7 +393,9 @@ def _validate_analysis_transition(
         error = AnalysisBoundaryError(str(exc))
         state.mark_failure("Agent4·结论台账门禁", str(error))
         raise error from exc
-    claim_errors = validate_claims(claims, state.project_dir, service.repository)
+    claim_errors = validate_claims(
+        claims, state.project_dir, service.repository, analysis_text=analysis_text
+    )
     if claim_errors:
         state.notes["analysis_claim_audit_errors"] = claim_errors
         error = AnalysisBoundaryError(
@@ -869,6 +904,9 @@ async def run_pipeline(state: ProjectState, host: PipelineHost | None = None) ->
     - `retry` 复位失败阶段后重跑（审查未通过时追加轮次预算）
     """
 
+    # 登记推进进程，让 Web 端的中断扫描能区分"CLI 正在跑"与"进程已死"。
+    # 不登记的话，CLI 跑到一半时启动工作台会把这个项目误标为中断。
+    state.mark_runner()
     try:
         await run_state_machine(state, host or CliPipelineHost())
     except PipelineError as e:
@@ -897,6 +935,8 @@ async def run_pipeline(state: ProjectState, host: PipelineHost | None = None) ->
             f"可用 `python -m research_agent retry {state.project_dir}` 重试当前阶段。"
         )
         raise
+    finally:
+        state.clear_runner()
 
 
 async def run_state_machine(state: ProjectState, host: PipelineHost) -> None:

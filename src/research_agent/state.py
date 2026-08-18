@@ -5,14 +5,37 @@
 from __future__ import annotations
 
 import json
+import os
+import platform
+import time
 from datetime import datetime
 from enum import Enum
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from . import config
+
+
+@lru_cache(maxsize=1)
+def _boot_id() -> str:
+    """本次主机启动的粗略标识，用于识别 PID 复用。
+
+    优先读 Linux 的 `/proc/sys/kernel/random/boot_id`；其他平台（含 macOS）退化为
+    "主机名 + 本进程启动前的开机时长"，精度到秒即可——目的只是让主机重启后
+    boot_id 必然变化，从而使重启前登记的 PID 一律失效。
+    """
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError:
+        pass
+    try:
+        uptime = int(time.time() - time.monotonic())
+    except OSError:  # pragma: no cover - monotonic 不可用属于极端环境
+        uptime = 0
+    return f"{platform.node()}-{uptime}"
 
 
 class Stage(str, Enum):
@@ -96,6 +119,11 @@ class ProjectState(BaseModel):
     last_error: str | None = None  # 最近一次失败原因
     retry_count: int = 0  # 用户触发重试的次数
 
+    # 正在推进该项目的进程标识。服务重启后用它区分"进程已死"与"Agent 正在跑"：
+    # 只有 stage 处于运行态、且这里记录的进程确实不存在时，才算被中断。
+    # 缺了它，重启时机恰好撞上运行中的项目会被误标为中断（实测发生过）。
+    runner: dict[str, Any] | None = None
+
     # Token 用量累计（明细按天存 token_usage.jsonl）
     token_usage: dict[str, Any] = Field(default_factory=dict)
 
@@ -155,3 +183,48 @@ class ProjectState(BaseModel):
         self.failed_stage = None
         self.last_error = None
         self.save()
+
+    # === 运行进程标识（区分"进程已死"与"Agent 正在跑"） ===
+
+    def mark_runner(self) -> None:
+        """把当前进程登记为该项目的推进者。"""
+        self.runner = {
+            "pid": os.getpid(),
+            "boot_id": _boot_id(),
+            "started_at": datetime.now().isoformat(),
+        }
+        self.save()
+
+    def clear_runner(self) -> None:
+        """推进结束（正常或异常）后注销进程标识。"""
+        if self.runner is None:
+            return
+        self.runner = None
+        self.save()
+
+    @property
+    def runner_is_alive(self) -> bool:
+        """登记的推进进程是否仍在运行。
+
+        `boot_id` 用于识别主机重启：重启后 PID 会被复用，只比 PID 会把一个无关的
+        新进程误判为"仍在推进"，从而让真正被中断的项目永远不被标记为可重试。
+        无法确定时保守返回 True——把运行中的项目误标为中断，比漏标更糟糕：
+        用户会在 Agent 正常工作时看到"已中断，请重试"。
+        """
+        if not self.runner:
+            return False
+        if self.runner.get("boot_id") != _boot_id():
+            return False
+        pid = self.runner.get("pid")
+        if not isinstance(pid, int):
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # 进程存在但属于其他用户
+            return True
+        except OSError:
+            return True
+        return True

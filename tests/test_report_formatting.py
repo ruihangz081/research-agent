@@ -13,6 +13,8 @@ from research_agent.report_formatting import (
     abbreviate_internal_ids_for_pdf,
     build_report_html,
     build_report_latex,
+    build_source_legend_markdown,
+    citation_source_order,
     find_latex_engine,
     find_pandoc,
     generate_report_artifacts,
@@ -23,6 +25,7 @@ from research_agent.report_formatting import (
     render_report_citations_for_html,
     render_report_citations_for_latex,
     replace_chart_placeholders,
+    strip_analysis_annotations,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "brokerage_report"
@@ -87,6 +90,98 @@ def test_pdf_appendix_internal_ids_are_abbreviated() -> None:
     )
 
     assert abbreviate_internal_ids_for_pdf(markdown) == "E-12345678 S-abcdef12"
+
+
+def test_analysis_annotations_are_stripped_from_delivery_text() -> None:
+    """Agent4 的内部推导标注不进入交付文本。
+
+    这些标注供证据门禁与人工复核使用；读者要看的是结论本身。实测一份报告正文
+    里混着 42 处 `[判断｜置信度: X]` 和 8 处 `[推导...]`，全部原样进了 PDF。
+    """
+    markdown = (
+        "总收入 2,048 亿元。[判断｜置信度: 高]\n"
+        "毛利率回落至 37%。[计算]\n"
+        "2027 年利润弹性是核心观察点。[推导｜依据如下]\n"
+        "该结论已有多源印证。[已验证事实]\n"
+    )
+
+    rendered = strip_analysis_annotations(markdown)
+
+    assert "判断｜置信度" not in rendered
+    assert "[计算]" not in rendered
+    assert "[推导" not in rendered
+    assert "[已验证事实]" not in rendered
+    assert "总收入 2,048 亿元。" in rendered
+    assert "2027 年利润弹性是核心观察点。" in rendered
+
+
+def test_low_confidence_annotation_becomes_readable_hint() -> None:
+    """低置信度是读者需要知道的信息，不能随标注一起静默删掉。"""
+    markdown = "目标价区间 620-680 港元。[推导｜假设驱动，低置信度]"
+
+    rendered = strip_analysis_annotations(markdown)
+
+    assert "（低置信度）" in rendered
+    assert "假设驱动" not in rendered
+    assert "目标价区间 620-680 港元。" in rendered
+
+
+def test_stripping_annotations_preserves_evidence_citations() -> None:
+    """剥离标注不得动到引用标记——引用审计依赖它们逐字存在。"""
+    citation = "[src:src_abcdef1234567890abcdef1234567890:v1, ev=ev_1, chunk=chk_1]"
+    markdown = f"营收 4200 万。[判断｜置信度: 中] {citation}"
+
+    rendered = strip_analysis_annotations(markdown)
+
+    assert citation in rendered
+    assert "置信度" not in rendered
+
+
+def test_citation_source_order_matches_rendered_numbers() -> None:
+    """图例顺序必须与正文上标编号严格一致。
+
+    两者一旦错位，读者顺着 `[3]` 会查到错误的来源——比没有图例更糟。
+    """
+    first = "src_1111111111111111111111111111aaaa"
+    second = "src_2222222222222222222222222222bbbb"
+    markdown = (
+        f"结论甲 [src:{first}:v1, ev=ev_1] 结论乙 [src:{second}:v1, ev=ev_2] "
+        f"结论丙 [src:{first}:v1, ev=ev_3]"
+    )
+
+    order = citation_source_order(markdown)
+    rendered = render_report_citations_for_latex(markdown)
+
+    assert order == [first, second]
+    assert rendered.count("<sup>[1]</sup>") == 2
+    assert rendered.count("<sup>[2]</sup>") == 1
+
+
+def test_citation_source_order_counts_inline_code_first() -> None:
+    """inline code 内的引用先编号，与渲染函数的两阶段遍历顺序保持一致。"""
+    inline = "src_3333333333333333333333333333cccc"
+    body = "src_4444444444444444444444444444dddd"
+    markdown = f"正文 [src:{body}:v1, ev=ev_1] 与 `[src:{inline}:v1, ev=ev_2]`"
+
+    order = citation_source_order(markdown)
+    rendered = render_report_citations_for_latex(markdown)
+
+    assert order == [inline, body]
+    # 渲染结果里 inline code 的引用编号为 1，正文的为 2
+    assert rendered.index("<sup>[2]</sup>") < rendered.index("<sup>[1]</sup>")
+
+
+def test_source_legend_falls_back_without_catalog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """catalog 不可用时图例降级为空，绝不阻断交付。"""
+    monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "missing")
+    legend = build_source_legend_markdown(
+        "no-such-project", ["src_5555555555555555555555555555eeee"]
+    )
+
+    # 项目不存在时仍返回可读表格（编号 + 原始 id），或空串；两者都不得抛异常
+    assert "引用来源对照" in legend or legend == ""
 
 
 def _copy_fixture(tmp_path: Path) -> tuple[Path, Path]:

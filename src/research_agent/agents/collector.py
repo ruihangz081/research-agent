@@ -15,7 +15,13 @@ from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
 from ..research_plan import plan_prompt_context
-from ..sources.tasks import load_tasks_file, config_tasks_path, tasks_prompt_context
+from ..sources.tasks import (
+    config_tasks_path,
+    load_task_execution_report,
+    load_tasks_file,
+    task_results_path,
+    tasks_prompt_context,
+)
 from ..tools import default_registry
 from .source_context import source_context
 
@@ -149,6 +155,7 @@ async def run_collection_round(
     raw_dir = state.project_dir / config.FILE_RAW_DATA_DIR
     raw_dir.mkdir(parents=True, exist_ok=True)
     round_output = raw_dir / config.FILE_RAW_ROUND.format(n=round_idx)
+    task_result_output = task_results_path(state, round_idx)
 
     previous_rounds = [
         raw_dir / config.FILE_RAW_ROUND.format(n=index)
@@ -164,25 +171,13 @@ async def run_collection_round(
         "{previous_rounds}": previous_rounds_str,
         "{feedback_json}": str(feedback_path) if feedback_path else "（首轮，无反馈）",
         "{round_output_path}": str(round_output),
+        "{task_results_path}": str(task_result_output),
         "{N}": str(round_idx),
         "{project_id}": state.project_dir.name,
     }
     for k, v in replacements.items():
         system_prompt = system_prompt.replace(k, v)
     system_prompt += plan_prompt_context(state)
-    analysis_gaps = state.notes.get("analysis_gap_requests", [])
-    if analysis_gaps:
-        gap_lines = "\n".join(
-            f"- question_id={item['question_id']} | reason={item['reason']} | "
-            f"needed_evidence={item['needed_evidence']}"
-            for item in analysis_gaps
-        )
-        system_prompt += (
-            "\n\n## Agent4 显式补研请求\n"
-            "这些请求不是新任务协议；本轮仍须按现有流程采集，随后交给 Agent3 "
-            "验证并通过 QualityGate。\n"
-            f"{gap_lines}\n"
-        )
 
     system_prompt += (
         f"\n\n## 当前项目参数\n"
@@ -193,6 +188,7 @@ async def run_collection_round(
         f"- 历史轮次文件：\n{previous_rounds_str}\n"
         f"- Agent3 反馈 JSON：`{feedback_path}`\n"
         f"- 本轮输出路径：`{round_output}`\n"
+        f"- ResearchTask 回填路径：`{task_result_output}`\n"
         f"- 研究需求清单：`{state.project_dir / config.FILE_RESEARCH_REQUIREMENTS}`\n"
     )
     # R3：注入结构化补研任务，取代 Agent2 从自由文本 gap 中重新理解缺口
@@ -216,12 +212,14 @@ async def run_collection_round(
         f"请执行第 {round_idx} 轮数据采集，"
         f"读取提纲与源清单，"
         + (f"消费反馈 `{feedback_path}`，" if feedback_path else "")
-        + f"将结果写入 `{round_output}`。"
+        + f"将结果写入 `{round_output}`，并将结构化任务回填写入 "
+        f"`{task_result_output}`。"
     )
     await _run_and_print(user_prompt, options, "bright_green")
 
     if not round_output.exists():
         raise RuntimeError(f"Agent2 第 {round_idx} 轮未能生成 raw data 文件：{round_output}")
+    load_task_execution_report(state, round_idx, task_result_output)
 
     console.print(f"[green]✓ 第 {round_idx} 轮采集完成：{round_output.name}[/green]")
     return round_output

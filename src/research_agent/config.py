@@ -58,6 +58,7 @@ FILE_STATE = "state.json"
 # 循环中间产物命名（占位 {n}）
 FILE_RAW_ROUND = "round_{n}.md"
 FILE_FEEDBACK_ROUND = "feedback_round_{n}.json"
+FILE_TASK_RESULTS_ROUND = "task_results_round_{n}.json"
 
 # === 循环上限 ===
 MAX_COLLECT_ROUNDS: int = int(os.getenv("MAX_COLLECT_ROUNDS", "3"))

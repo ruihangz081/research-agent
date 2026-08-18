@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>项目工作区 · 溯光 Lumitrace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260731-rerun" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260817-workspace-layout" />
   </head>
   <body>
     <div class="app-shell">
@@ -25,7 +25,6 @@
         </header>
 
         <div class="page-content">
-          <section id="pipeline" class="pipeline" aria-label="研究进度"></section>
           <section id="failurePanel" class="panel failure-panel hidden">
             <div class="panel-header"><h2>运行失败</h2><span class="status-pill danger"><i class="status-dot danger"></i>需要处理</span></div>
             <div class="panel-body">
@@ -53,10 +52,32 @@
           </section>
           <div id="workspaceEmpty" class="panel empty"><span class="empty-symbol">◇</span><strong>选择一个研究项目</strong><p>从研究首页打开项目，查看 Agent 执行进度与产物。</p><a class="button primary" href="/research">前往研究首页</a></div>
 
-          <div id="workspaceContent" class="workspace-grid hidden">
-            <div class="workspace-stack">
-              <section id="rerunPanel" class="panel hidden">
-                <div class="panel-header"><h2>回退重跑</h2><span class="status-pill warning">保留旧版本</span></div>
+          <div id="workspaceContent" class="workspace-shell hidden">
+            <section id="pipeline" class="pipeline" aria-label="研究进度"></section>
+
+            <section id="planPanel" class="panel evaluation-panel">
+              <div class="panel-header"><div><span class="panel-kicker">评估视图</span><h2>研究需求清单</h2></div><span id="planBadge" class="status-pill">—</span></div>
+              <div class="panel-body">
+                <p class="muted evaluation-description">研究开始前固定的必答问题。先确认达标情况与交付阻断项，再查看运行进度和项目产物。</p>
+                <div id="planTable"></div>
+              </div>
+            </section>
+
+            <div class="workspace-grid">
+              <div class="workspace-stack">
+              <section class="panel">
+                <div class="panel-header"><h2>Agent 执行时间线</h2><span id="roundBadge" class="status-pill">第 0 / 0 轮</span></div>
+                <div class="panel-body">
+                  <div id="timeline" class="timeline"></div>
+                  <details style="margin-top:14px">
+                    <summary class="muted" style="cursor:pointer;font-weight:700">实时日志</summary>
+                    <div id="logList" class="log-box" style="margin-top:10px"></div>
+                  </details>
+                </div>
+              </section>
+
+              <details id="rerunPanel" class="panel rerun-panel hidden">
+                <summary class="panel-header"><div><span class="panel-kicker">低频操作</span><h2>运行控制与回退重跑</h2></div><span class="status-pill warning">保留旧版本</span></summary>
                 <div class="panel-body">
                   <p class="muted" style="margin-top:0">选择一个已到达的阶段重新运行。该阶段及之后的旧产物会先保存到项目备份中。</p>
                   <div class="rerun-controls">
@@ -65,26 +86,7 @@
                   </div>
                   <small id="rerunHint" class="field-help"></small>
                 </div>
-              </section>
-
-              <section class="panel">
-                <div class="panel-header"><h2>Agent 执行时间线</h2><span id="roundBadge" class="status-pill">第 0 / 0 轮</span></div>
-                <div class="panel-body">
-                  <div id="timeline" class="timeline"></div>
-                  <details style="margin-top:14px" open>
-                    <summary class="muted" style="cursor:pointer;font-weight:700">实时日志</summary>
-                    <div id="logList" class="log-box" style="margin-top:10px"></div>
-                  </details>
-                </div>
-              </section>
-
-              <section id="planPanel" class="panel">
-                <div class="panel-header"><h2>研究需求清单</h2><span id="planBadge" class="status-pill">—</span></div>
-                <div class="panel-body">
-                  <p class="muted" style="margin-top:0">研究开始前固定的必答问题。确定性质量门按这份清单判定覆盖率，与已找到多少证据无关。</p>
-                  <div id="planTable"></div>
-                </div>
-              </section>
+              </details>
 
               <section id="clarifyPanel" class="panel checkpoint hidden">
                 <div class="panel-header"><h2>Agent1 需求澄清</h2><span class="status-pill warning">待回答</span></div>
@@ -104,20 +106,21 @@
                 </div>
                 <div class="checkpoint-actions" style="padding:0 18px 18px"><button id="rejectBtn" class="button danger" type="button">驳回并重做</button><button id="approveBtn" class="button primary" type="button">通过并继续</button></div>
               </section>
-            </div>
+              </div>
 
-            <section class="panel">
-              <div class="panel-header"><h2>项目产物</h2><span class="muted">按阶段持续生成</span></div>
-              <div class="artifact-toolbar">
-                <button id="downloadPdfBtn" class="button primary small" type="button" disabled>正式 PDF</button>
-                <button id="typesetBtn" class="button secondary small" type="button" disabled>重新排版</button>
-                <button id="downloadTexBtn" class="button secondary small" type="button" disabled>下载 TeX</button>
-              </div>
-              <div class="artifact-layout">
-                <nav id="artifactTabs" class="artifact-tabs" aria-label="项目产物"></nav>
-                <article id="artifactView" class="artifact-content"></article>
-              </div>
-            </section>
+              <section class="panel">
+                <div class="panel-header"><h2>项目产物</h2><span class="muted">按阶段持续生成</span></div>
+                <div class="artifact-toolbar">
+                  <button id="downloadPdfBtn" class="button primary small" type="button" disabled>正式 PDF</button>
+                  <button id="typesetBtn" class="button secondary small" type="button" disabled>重新排版</button>
+                  <button id="downloadTexBtn" class="button secondary small" type="button" disabled>下载 TeX</button>
+                </div>
+                <div class="artifact-layout">
+                  <nav id="artifactTabs" class="artifact-tabs" aria-label="项目产物"></nav>
+                  <article id="artifactView" class="artifact-content"></article>
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       </main>

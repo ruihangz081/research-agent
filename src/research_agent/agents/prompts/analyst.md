@@ -125,6 +125,7 @@ system prompt 中固定的 `research_requirements.json` 定义本次研究的必
    - 综合结论中的「行业结构性判断」（3–5 条）必须全部产出 claim，且 `importance` 为 `critical`。
 4. **关键结论必须挂证据**：`importance=critical` 的 claim 必须至少 1 条 `supporting_evidence_ids`；`supporting_evidence_ids` 只能引用系统提示中 `SUPPORTED EvidenceRecord Catalog` 里的 `evidence_id`，且该证据的 `research_question_id` 必须与 claim 的 `question_id` 一致。
 5. **分类准确**：`kind` 只能取 `fact`（已验证事实）/ `derivation`（计算推导）/ `judgment`（综合判断），与正文四类标注对应；`confidence` 取 `high`/`medium`/`low`。
+   - `importance` 只能取 `critical` / `major` / `minor`，不得使用 `high` / `medium` / `low`；后者仅属于 `confidence`。
 6. `contradicting_evidence_ids` 列出与该结论冲突的已入库证据（若有），否则为空数组。
 
 ## 输出格式（严格遵守）

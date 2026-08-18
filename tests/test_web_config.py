@@ -250,6 +250,82 @@ async def test_web_blocks_legacy_project_without_research_plan(
     assert len(after_payload["research_plan"]["requirements"]) == 2
 
 
+def test_workspace_hides_plan_migration_before_outline_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    state = ProjectState(
+        topic="new-project",
+        date_str="20260817",
+        stage=Stage.AWAIT_CLARIFICATION,
+    )
+    state.save()
+
+    payload = web_app._research_plan_payload(state)
+
+    assert payload["available"] is False
+    assert payload["migration_required"] is False
+
+
+def test_workspace_offers_plan_migration_for_legacy_outline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    state = ProjectState(
+        topic="legacy-project",
+        date_str="20260719",
+        stage=Stage.DONE,
+    )
+    outline = state.project_dir / config.FILE_OUTLINE
+    outline.parent.mkdir(parents=True)
+    outline.write_text(
+        "# 提纲\n\n## 二、核心研究问题\n1. 市场规模是多少？\n",
+        encoding="utf-8",
+    )
+    state.outline_path = str(outline)
+    state.save()
+
+    payload = web_app._research_plan_payload(state)
+
+    assert payload["available"] is False
+    assert payload["migration_required"] is True
+
+
+def test_workspace_plan_migration_panel_requires_explicit_flag() -> None:
+    source = (web_app.STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "plan.migration_required === true" in source
+
+
+def test_workspace_places_progress_then_evaluation_before_run_panels() -> None:
+    source = (web_app.STATIC_DIR / "workspace.html").read_text(encoding="utf-8")
+
+    plan_position = source.index('id="planPanel"')
+    pipeline_position = source.index('id="pipeline"')
+    timeline_position = source.index("Agent 执行时间线")
+    artifacts_position = source.index("<h2>项目产物</h2>")
+
+    assert pipeline_position < plan_position < timeline_position < artifacts_position
+    assert 'id="workspaceContent" class="workspace-shell hidden"' in source
+    assert '<details id="rerunPanel"' in source
+
+
+def test_workspace_long_timeline_content_does_not_collapse_column_gap() -> None:
+    styles = (web_app.STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert ".workspace-grid > *, .workspace-stack, .workspace-stack > * { min-width: 0; }" in styles
+    assert "grid-template-columns: 64px minmax(0, 1fr) auto" in styles
+    assert ".timeline-row p { min-width: 0;" in styles
+    assert "overflow-wrap: anywhere" in styles
+
+
+def test_results_sidebar_items_fill_the_available_width() -> None:
+    styles = (web_app.STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+    template = (web_app.STATIC_DIR / "results.html").read_text(encoding="utf-8")
+
+    assert ".result-item { display: grid; width: 100%;" in styles
+    assert "styles.css?v=20260817-results-list" in template
+
+
 @pytest.mark.anyio
 async def test_web_migration_does_not_overwrite_valid_plan(
     tmp_path: Path,
@@ -876,6 +952,69 @@ async def test_startup_recovery_keeps_existing_failure_reason(
 
     assert web_app._recover_interrupted_projects() == []
     assert ProjectState.load(state.project_dir).last_error == "LLM timeout"
+
+
+@pytest.mark.anyio
+async def test_startup_recovery_leaves_live_runner_untouched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """另一个进程正在推进的项目不得被标记为中断。
+
+    只看 stage 会把健康的运行误标为中断：服务重启的时机若撞上 CLI 或另一个
+    worker 正在跑的项目，用户会在 Agent 正常工作时看到"已中断，请重试"。
+    """
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    web_app.JOBS.clear()
+    running = ProjectState(
+        topic="live-runner", date_str="20260817", stage=Stage.ANALYZING
+    )
+    running.save()
+    running.mark_runner()  # 登记当前进程——它显然活着
+
+    assert web_app._recover_interrupted_projects() == []
+    reloaded = ProjectState.load(running.project_dir)
+    assert reloaded.failed_stage is None
+    assert reloaded.runner is not None
+
+
+@pytest.mark.anyio
+async def test_startup_recovery_marks_dead_runner_as_interrupted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """登记的推进进程已不存在时，项目才算被中断。"""
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    web_app.JOBS.clear()
+    dead = ProjectState(topic="dead-runner", date_str="20260817", stage=Stage.FORMATTING)
+    dead.save()
+    dead.mark_runner()
+    # 伪造一个几乎不可能存在的 PID，保留当前 boot_id 以确认判定走的是存活检查
+    dead.runner = {**dead.runner, "pid": 2**22 - 1}
+    dead.save()
+
+    assert web_app._recover_interrupted_projects() == [dead.project_dir.name]
+    reloaded = ProjectState.load(dead.project_dir)
+    assert reloaded.failed_stage == Stage.FORMATTING.value
+    assert reloaded.runner is None
+
+
+def test_runner_from_previous_boot_is_not_alive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """主机重启后 PID 会被复用，旧 boot_id 的登记必须一律失效。
+
+    否则一个无关的新进程会被误判为"仍在推进"，真正被中断的项目永远不会被标记
+    为可重试。
+    """
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    state = ProjectState(topic="stale-boot", date_str="20260817", stage=Stage.ANALYZING)
+    state.save()
+    state.mark_runner()
+    assert state.runner_is_alive is True
+
+    state.runner = {**state.runner, "boot_id": "boot-from-a-previous-uptime"}
+    assert state.runner_is_alive is False
 
 
 @pytest.mark.anyio

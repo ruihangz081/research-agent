@@ -9,6 +9,6 @@ Use this order unless the approved outline requires a clearly better domain-spec
 5. Outlook or scenarios: clearly distinguish historical actuals, estimates, and assumptions.
 6. Risks: state trigger, transmission path, affected conclusion, and observable indicator.
 7. Conclusions and actions: connect recommendations to evidence and constraints.
-8. Methodology, risk disclosure, and disclaimer when already present in Agent4 output.
+8. Methodology, risk disclosure, and disclaimer.
 
-This structure guides Agent4. Agent5 must not rewrite Agent4 to force this order, and must not append an evidence index. Preserve the approved outline's audience, scope, required deliverables, and every line of Agent4 Markdown.
+This structure guides Agent4, the only agent that writes report prose. Agent5 copies Agent4 Markdown verbatim and inserts chart placeholders only, so Agent4 output must already be the complete, publication-ready report: no later stage will reorder sections, append an evidence index, or patch in missing conclusions. Keep headings conclusion-led where possible, use at most three heading levels, avoid repeating the executive summary in later chapters, and preserve the approved outline's audience, scope, and required deliverables.

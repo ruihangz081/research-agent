@@ -17,6 +17,7 @@ from rich.console import Console
 
 from .. import config
 from ..agent_loop import AgentOptions, run_agent
+from ..agent_skills import load_project_skill
 from ..llm import LLMClient
 from ..research_plan import load_plan, plan_prompt_context
 from ..tools import default_registry
@@ -139,7 +140,10 @@ async def run_analysis(state: "ProjectState") -> Path:
     outcome_path.unlink(missing_ok=True)
     claims_path.unlink(missing_ok=True)
 
-    system_prompt = _load_analyst_prompt()
+    # Agent4 现在是唯一撰写正文的 Agent（Agent5 只出图表清单，正文被逐字复制），
+    # 因此报告结构、表格与中文行文规范必须在这里注入。
+    skill = load_project_skill(config.REPORT_FORMATTING_SKILL, role="analyst")
+    system_prompt = _load_analyst_prompt() + skill.prompt_context()
     system_prompt += plan_prompt_context(state)
     system_prompt += analyst_evidence_context(state)
     replacements = {
@@ -164,6 +168,9 @@ async def run_analysis(state: "ProjectState") -> Path:
         f"- 分析结果输出路径：`{outcome_path}`\n"
         f"- 结论台账输出路径：`{claims_path}`\n"
         f"- 研究需求清单：`{state.project_dir / config.FILE_RESEARCH_REQUIREMENTS}`\n"
+        f"- 已加载写作规范 Skill：`{skill.name}`（报告结构、表格与中文行文规范）\n"
+        f"- 你的 Markdown 会被逐字复制为最终交付报告，Agent5 只在其中插入图表占位符，"
+        f"不会重写、补写或追加任何内容。\n"
     )
 
     options = AgentOptions(

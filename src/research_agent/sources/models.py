@@ -263,20 +263,91 @@ class ClaimsFile(BaseModel):
         return self
 
 
-class ResearchTask(BaseModel):
-    """Agent3 产出的结构化补研任务（R3）。
+class ResearchTaskUpdate(BaseModel):
+    """Agent3 在 ``feedback.tasks`` 中提出的新任务或状态更新。"""
 
-    与自由文本 gap 不同，任务有稳定 task_id 与持久化状态，Agent2 逐条执行，
-    Agent3 验收回填，Orchestrator 用确定性门禁阻断未完成的 critical 任务。
-    """
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str | None = None
+    question_id: str
+    description: str = Field(min_length=1)
+    task_type: Literal[
+        "coverage_gap", "corroboration", "conflict_resolution", "analysis_gap"
+    ] = "coverage_gap"
+    priority: Literal["critical", "normal"] = "normal"
+    target_period: str | None = None
+    min_source_tier: Literal["S", "A", "B", "D"] | None = None
+    required_independent_sources: int = Field(default=1, ge=1)
+    completion_criteria: str = ""
+    status: Literal["pending", "completed", "blocked", "waived"] = "pending"
+    completed_evidence_ids: list[str] = Field(default_factory=list)
+    created_round: int | None = Field(default=None, ge=1)
+    completed_round: int | None = None
+    blocked_reason: str | None = None
+
+    @field_validator("task_id", "target_period", "blocked_reason")
+    @classmethod
+    def _strip_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+    @field_validator("question_id")
+    @classmethod
+    def _question_id_is_present(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("question_id 不能为空")
+        return cleaned
+
+    @field_validator("description")
+    @classmethod
+    def _description_is_present(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("任务描述不能为空")
+        return cleaned
+
+    @field_validator("completion_criteria")
+    @classmethod
+    def _strip_completion_criteria(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("completed_evidence_ids")
+    @classmethod
+    def _deduplicate_evidence_ids(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+    @model_validator(mode="after")
+    def _status_contract(self) -> "ResearchTaskUpdate":
+        if self.status == "completed" and not self.completed_evidence_ids:
+            raise ValueError("completed 任务必须回填至少一条 completed_evidence_ids")
+        if self.status == "blocked" and not self.blocked_reason:
+            raise ValueError("blocked 任务必须填写 blocked_reason")
+        return self
+
+
+class ResearchTask(BaseModel):
+    """持久化在 ``03_tasks.json`` 中的结构化补研任务。"""
+
+    model_config = ConfigDict(extra="forbid")
 
     task_id: str
     question_id: str
     description: str = Field(min_length=1)
+    task_type: Literal[
+        "coverage_gap", "corroboration", "conflict_resolution", "analysis_gap"
+    ] = "coverage_gap"
     priority: Literal["critical", "normal"] = "normal"
+    target_period: str | None = None
+    min_source_tier: Literal["S", "A", "B", "D"] | None = None
+    required_independent_sources: int = Field(default=1, ge=1)
+    completion_criteria: str = ""
     status: Literal["pending", "completed", "blocked", "waived"] = "pending"
+    source_ids: list[str] = Field(default_factory=list)
     completed_evidence_ids: list[str] = Field(default_factory=list)
     created_round: int = Field(ge=1)
+    updated_round: int | None = Field(default=None, ge=1)
     completed_round: int | None = None
     blocked_reason: str | None = None
 
@@ -296,10 +367,24 @@ class ResearchTask(BaseModel):
             raise ValueError("任务描述不能为空")
         return cleaned
 
+    @field_validator("target_period", "blocked_reason")
+    @classmethod
+    def _strip_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+    @field_validator("source_ids", "completed_evidence_ids")
+    @classmethod
+    def _deduplicate_ids(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
     @model_validator(mode="after")
-    def _completed_task_records_evidence(self) -> "ResearchTask":
+    def _status_contract(self) -> "ResearchTask":
         if self.status == "completed" and not self.completed_evidence_ids:
             raise ValueError("completed 任务必须回填至少一条 completed_evidence_ids")
+        if self.status == "blocked" and not self.blocked_reason:
+            raise ValueError("blocked 任务必须填写 blocked_reason")
         return self
 
 
@@ -319,6 +404,52 @@ class ResearchTasksFile(BaseModel):
             seen.add(item.task_id)
         if duplicates:
             raise ValueError(f"task_id 重复：{', '.join(sorted(set(duplicates)))}")
+        return self
+
+
+class ResearchTaskExecution(BaseModel):
+    """Agent2 对单个补研任务的本轮执行回填。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(min_length=1)
+    status: Literal["sourced", "blocked"]
+    source_ids: list[str] = Field(default_factory=list)
+    blocked_reason: str | None = None
+
+    @field_validator("task_id")
+    @classmethod
+    def _strip_task_id(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("source_ids")
+    @classmethod
+    def _deduplicate_source_ids(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+    @model_validator(mode="after")
+    def _execution_contract(self) -> "ResearchTaskExecution":
+        if self.status == "sourced" and not self.source_ids:
+            raise ValueError("sourced 任务必须回填至少一个 source_id")
+        if self.status == "blocked" and not self.blocked_reason:
+            raise ValueError("blocked 任务必须填写 blocked_reason")
+        return self
+
+
+class ResearchTaskExecutionReport(BaseModel):
+    """Agent2 每轮写入 ``03_raw_data/task_results_round_N.json`` 的回填。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0"] = "1.0"
+    round: int = Field(ge=1)
+    results: list[ResearchTaskExecution] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _task_ids_are_unique(self) -> "ResearchTaskExecutionReport":
+        task_ids = [item.task_id for item in self.results]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("任务回填中存在重复 task_id")
         return self
 
 

@@ -36,6 +36,18 @@ _REPORT_CITATION = re.compile(
 _EVIDENCE_ID = re.compile(r"\bev_([0-9a-f]{32})\b", re.IGNORECASE)
 _SOURCE_ID = re.compile(r"\bsrc_([0-9a-f]{32})\b", re.IGNORECASE)
 _INLINE_CODE = re.compile(r"`([^`\r\n]+)`")
+
+#: Agent4 在正文里用方括号标注每句结论的推导类别与置信度，例如
+#: `[判断｜置信度: 高]`、`[计算]`、`[推导｜依据如下]`。这些是分析过程的内部标注，
+#: 供证据门禁与人工复核使用，不是给读者看的内容。上一版它们原样进入 PDF——
+#: 实测一份报告里有 42 处置信度标注和 8 处推导标注混在正文中。
+#: 置信度信息本身有价值，但应该以可读形式呈现，而不是内部标签。
+_ANALYSIS_ANNOTATION = re.compile(
+    r"[ \t]*\[(判断|计算|推导|已验证事实|证据不足)"
+    r"(?:[｜|][^\[\]\r\n]*)?\][ \t]*"
+)
+_LOW_CONFIDENCE_HINT = re.compile(r"低置信度")
+
 _PDF_HEADING = re.compile(r"^(#{2,6}[ \t]+)(.+)$", re.MULTILINE)
 _CHINESE_HEADING_NUMBER = re.compile(
     r"^(?:第)?[〇零一二三四五六七八九十百]+[、.．][ \t]*"
@@ -168,6 +180,110 @@ def render_report_citations_for_latex(markdown: str) -> str:
         citation_markup,
         _INLINE_CODE.sub(inline_code, markdown),
     )
+
+
+def strip_analysis_annotations(markdown: str) -> str:
+    """把 Agent4 的内部推导标注从交付文本中移除。
+
+    Agent4 需要在正文标注每条结论的推导类别与置信度，确定性门禁与人工复核都依赖
+    它们；但读者看到的应该是结论本身，不是 `[判断｜置信度: 高]` 这样的内部标签。
+    Markdown 源文件保持原样（引用审计与结论门禁都基于它），只在渲染阶段剥离。
+
+    低置信度是读者需要知道的信息，因此不静默丢弃：标注里带"低置信度"时替换为
+    可读的中文提示，其余标注直接删除。
+    """
+
+    def replacement(match: re.Match[str]) -> str:
+        if _LOW_CONFIDENCE_HINT.search(match.group(0)):
+            return "（低置信度）"
+        return ""
+
+    return _ANALYSIS_ANNOTATION.sub(replacement, markdown)
+
+
+def citation_source_order(markdown: str) -> list[str]:
+    """按渲染时的编号顺序返回引用到的 source_id。
+
+    刻意复刻两个渲染函数的两阶段遍历顺序（先 inline code 内，再正文），保证图例
+    编号与正文上标编号严格一致；否则读者会顺着 `[3]` 查到错误的来源。
+    """
+    order: dict[str, int] = {}
+
+    def record(match: re.Match[str]) -> str:
+        order.setdefault(match.group(1), len(order) + 1)
+        return match.group(0)
+
+    def inline_code(match: re.Match[str]) -> str:
+        _REPORT_CITATION.sub(record, match.group(1))
+        return match.group(0)
+
+    _INLINE_CODE.sub(inline_code, markdown)
+    _REPORT_CITATION.sub(record, markdown)
+    return [source_id for source_id, _ in sorted(order.items(), key=lambda kv: kv[1])]
+
+
+def _source_legend_rows(
+    project_id: str, ordered_source_ids: list[str]
+) -> list[tuple[int, str, str, str]]:
+    """按引用编号顺序取出来源元数据，供渲染阶段生成图例。
+
+    只读 catalog 元数据（标题、发布者、抓取日期、URL），不碰 EvidenceRecord 正文。
+    上一版在 Markdown 里生成的逐条证据附录有 59 条、26,608 字符（占报告 35%）；
+    读者需要的是"[3] 指哪份材料"，而非每条证据的原文摘录。
+    """
+    try:
+        from .sources.runtime import get_service
+
+        service = get_service(config.SOURCE_DATA_DIR)
+        sources = {
+            source.source_id: source
+            for source in service.list_sources(project_id, include_superseded=True)
+        }
+    except Exception:
+        # 图例是可读性增强，catalog 不可用时不能阻断交付。
+        return []
+
+    rows: list[tuple[int, str, str, str]] = []
+    for number, source_id in enumerate(ordered_source_ids, 1):
+        source = sources.get(source_id)
+        if source is None:
+            rows.append((number, source_id, "", ""))
+            continue
+        title = (source.title or source.original_filename or source_id).strip()
+        publisher = (source.publisher or "").strip()
+        retrieved = ""
+        if source.retrieved_at is not None:
+            retrieved = str(source.retrieved_at)[:10]
+        rows.append((number, title, publisher, retrieved))
+    return rows
+
+
+def build_source_legend_markdown(
+    project_id: str, ordered_source_ids: list[str]
+) -> str:
+    """生成正文末尾的紧凑来源图例（Markdown 表格）。
+
+    正文里的引用被压缩成 `[N]` 上标后，读者失去了"N 指哪份材料"的线索。图例把
+    编号映射回可识别的来源，一源一行；完整 locator 与证据原文仍可在材料中心按
+    source_id 查阅，不必印进报告。
+    """
+    rows = _source_legend_rows(project_id, ordered_source_ids)
+    if not rows:
+        return ""
+    lines = [
+        "",
+        "---",
+        "",
+        "## 引用来源对照",
+        "",
+        "| 编号 | 来源 | 发布方 | 取得日期 |",
+        "|---|---|---|---|",
+    ]
+    for number, title, publisher, retrieved in rows:
+        safe_title = title.replace("|", r"\|")
+        lines.append(f"| [{number}] | {safe_title} | {publisher or '—'} | {retrieved or '—'} |")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def abbreviate_internal_ids_for_pdf(markdown: str) -> str:
@@ -406,6 +522,7 @@ def build_report_html(
         _ensure_disclaimer(markdown), manifest, assets, target="html", project_id=project_id
     )
     prepared = render_report_citations_for_html(prepared, project_id)
+    prepared = strip_analysis_annotations(prepared)
     proc = _run(
         [pandoc, "--from=gfm+raw_html", "--to=html5", "--wrap=none"],
         cwd=project_dir,
@@ -439,14 +556,24 @@ def build_report_latex(
     if not template.is_file() or not style.is_file() or not table_filter.is_file():
         raise RuntimeError("券商研报 LaTeX 模板资产不完整")
     shutil.copyfile(style, project_dir / style.name)
+    # 图例必须在引用被压成 [N] 之前算好顺序，否则拿不到 source_id。
+    # HTML 路径不需要：那里的上标是指向材料中心的可点击链接。
+    legend = build_source_legend_markdown(
+        project_dir.name, citation_source_order(markdown)
+    )
     prepared = normalize_heading_numbers_for_pdf(
         normalize_markdown_for_pdf(
             replace_chart_placeholders(
-                _ensure_disclaimer(markdown), manifest, assets, target="latex"
+                # 图例放在免责声明之前：免责声明按惯例是报告最后一节。
+                _ensure_disclaimer(markdown.rstrip() + legend),
+                manifest,
+                assets,
+                target="latex",
             )
         )
     )
     prepared = render_report_citations_for_latex(prepared)
+    prepared = strip_analysis_annotations(prepared)
     prepared = abbreviate_internal_ids_for_pdf(prepared)
     prepared = re.sub(r"\A# [^\n]+\n+", "", prepared, count=1)
     source_path = project_dir / "05_final_report.render.md"

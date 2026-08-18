@@ -52,6 +52,7 @@ from .state import ProjectState, Stage
 from .tools import default_registry
 from .tools.builtins.web_search import SUPPORTED_PROVIDERS, web_search
 from .sources.api import build_runtime, create_sources_router
+from .sources.tasks import TasksError, config_tasks_path, load_tasks_file
 
 STATIC_DIR = Path(__file__).parent / "web_static"
 ARTIFACT_LIMIT = 120_000
@@ -366,6 +367,11 @@ def _artifact_paths(state: ProjectState) -> list[tuple[str, str, Path | None]]:
             else state.project_dir / config.FILE_RESEARCH_REQUIREMENTS,
         ),
         (
+            "research_tasks",
+            "结构化补研任务",
+            config_tasks_path(state.project_dir),
+        ),
+        (
             "sources_draft",
             "信息源草案",
             Path(state.sources_draft_path) if state.sources_draft_path else None,
@@ -406,6 +412,8 @@ def _artifact_paths(state: ProjectState) -> list[tuple[str, str, Path | None]]:
             artifacts.append((path.stem, f"采集数据 {path.stem}", path))
         for path in sorted(raw_dir.glob("feedback_round_*.json")):
             artifacts.append((path.stem, f"验证反馈 {path.stem}", path))
+        for path in sorted(raw_dir.glob("task_results_round_*.json")):
+            artifacts.append((path.stem, f"任务回填 {path.stem}", path))
     return artifacts
 
 
@@ -462,9 +470,16 @@ def _research_plan_payload(state: ProjectState) -> dict[str, Any]:
     """需求清单在工作台的可见状态。缺失时前端显示迁移入口。"""
     plan = load_plan_or_none(state)
     if plan is None:
+        canonical_outline = state.project_dir / config.FILE_OUTLINE
+        referenced_outline = Path(state.outline_path) if state.outline_path else None
+        has_outline = canonical_outline.is_file() or bool(
+            referenced_outline and referenced_outline.is_file()
+        )
         return {
             "available": False,
-            "migration_required": research_plan_migration_required(state),
+            "migration_required": (
+                research_plan_migration_required(state) or has_outline
+            ),
             "error": state.notes.get("research_plan_error"),
             "requirements": [],
             "coverage": state.notes.get("research_question_coverage", {}),
@@ -477,6 +492,20 @@ def _research_plan_payload(state: ProjectState) -> dict[str, Any]:
         "warning": state.notes.get("research_plan_warning"),
         "requirements": [item.model_dump() for item in plan.requirements],
         "coverage": state.notes.get("research_question_coverage", {}),
+    }
+
+
+def _research_tasks_payload(state: ProjectState) -> dict[str, Any]:
+    try:
+        ledger = load_tasks_file(config_tasks_path(state.project_dir))
+    except TasksError as exc:
+        return {"available": False, "error": str(exc), "tasks": []}
+    return {
+        "available": True,
+        "error": None,
+        "tasks": [item.model_dump() for item in ledger.tasks],
+        "counts": state.notes.get("research_task_counts", {}),
+        "blocking_task_ids": state.notes.get("pending_critical_tasks", []),
     }
 
 
@@ -527,6 +556,7 @@ def _serialize_state(state: ProjectState) -> dict[str, Any]:
         "quality_gate": state.notes.get("quality_gate"),
         "quality_gate_reasons": state.notes.get("quality_gate_reasons", []),
         "research_plan": _research_plan_payload(state),
+        "research_tasks": _research_tasks_payload(state),
         "clarification_questions": state.notes.get("clarification_questions", []),
         "clarification": state.clarification,
         "token_usage": state.token_usage or {},
@@ -711,6 +741,7 @@ async def _run_until_pause(project_id: str) -> None:
         try:
             state = _load_state(project_id)
             state.clear_failure()
+            state.mark_runner()
             if recover_blocked_delivery(state):
                 _log(project_id, "检测到旧的无证据交付状态，已回到采集验证阶段")
             await run_state_machine(state, WebPipelineHost(project_id))
@@ -728,6 +759,8 @@ async def _run_until_pause(project_id: str) -> None:
                 state.mark_failure(state.stage.value, str(exc))
             _log(project_id, f"运行失败：{exc}")
         finally:
+            if state is not None:
+                state.clear_runner()
             job["running"] = False
             job["updated_at"] = datetime.now().isoformat()
             _notify_subscribers(project_id)
@@ -743,8 +776,13 @@ def _schedule(project_id: str) -> None:
 def _recover_interrupted_projects() -> list[str]:
     """标记上次进程退出时停在 Agent 执行中的项目。
 
-    这些项目的 stage 处于运行态但没有任何活动任务，说明服务是在 Agent 跑到
-    一半时退出的。标记为失败后，工作台会显示可重试，而不是静默停在"已暂停"。
+    判定依据是 `state.runner`：stage 处于运行态、且登记的推进进程已经不存在时，
+    说明服务是在 Agent 跑到一半时退出的。标记为失败后，工作台会显示可重试，
+    而不是静默停在"已暂停"。
+
+    只看 stage 是不够的——服务重启的时机如果恰好撞上另一个进程正在推进的项目，
+    会把健康的运行误标为中断（实测发生过）。`runner_is_alive` 在无法确定时保守
+    返回 True，宁可漏标也不误标。
     """
     recovered: list[str] = []
     if not config.PROJECTS_DIR.exists():
@@ -758,6 +796,9 @@ def _recover_interrupted_projects() -> list[str]:
             continue
         if not state.stage.is_agent_running or state.failed_stage:
             continue
+        if state.runner_is_alive:
+            continue
+        state.clear_runner()
         state.mark_failure(
             state.stage.value,
             "上次运行被中断（服务重启或进程退出），该阶段未完成。可点击重试从此阶段继续。",

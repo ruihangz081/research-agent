@@ -294,6 +294,117 @@ def test_claim_with_unknown_question_id_blocks(
 
 
 # ═══════════════════════════════════════════════════════════════
+# 门禁①附加：台账必须对应分析报告正文
+# ═══════════════════════════════════════════════════════════════
+
+
+def _two_question_claims(extra: dict | None = None) -> ClaimsFile:
+    claims = [
+        {
+            "claim_id": "c1",
+            "question_id": "q1",
+            "kind": "fact",
+            "importance": "critical",
+            "text": "营收 4200 万",
+            "supporting_evidence_ids": ["ev-1"],
+        },
+        {
+            "claim_id": "c2",
+            "question_id": "q2",
+            "kind": "judgment",
+            "importance": "major",
+            "text": "增长由价格驱动",
+        },
+    ]
+    if extra:
+        claims.append(extra)
+    return ClaimsFile(claims=claims)
+
+
+def test_claim_absent_from_analysis_body_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """台账不得包含分析报告正文里不存在的结论。
+
+    Agent5 不再撰写正文后，这类"台账独有"的结论既不会出现在交付物里，也不会被
+    任何其他门禁发现——等于凭空多出一批无法追溯到报告的结论。
+    """
+    state = _state(tmp_path, monkeypatch)
+    _record_evidence(state, evidence_id="ev-1", question_id="q1", status=VerificationStatus.SUPPORTED)
+    analysis = "# 分析\n\n营收 4200 万。\n\n增长由价格驱动。\n"
+
+    errors = validate_claims(
+        _two_question_claims(
+            {
+                "claim_id": "c3",
+                "question_id": "q2",
+                "kind": "judgment",
+                "importance": "major",
+                "text": "公司将在三年内成为全球第一",
+            }
+        ),
+        state.project_dir,
+        _repository(),
+        analysis_text=analysis,
+    )
+
+    assert any("c3" in error and "找不到对应句子" in error for error in errors)
+    assert not any("c1" in error for error in errors)
+
+
+def test_claim_matching_analysis_ignores_citations_and_emphasis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """正文里的引用标记、强调符号和换行不算差异。
+
+    正文会在同一句里插入 `[src:...]` 引用、`[判断｜置信度: 中]` 标注和 `**` 强调，
+    要求模型在台账里逐字复现这些排版符号不现实（实测 19 条只有 13 条能原样匹配）。
+    门禁校验的是对应关系，不是字节相同。
+    """
+    state = _state(tmp_path, monkeypatch)
+    _record_evidence(state, evidence_id="ev-1", question_id="q1", status=VerificationStatus.SUPPORTED)
+    analysis = (
+        "# 分析\n\n"
+        "**营收 4200 万**：同比高增。[判断｜置信度: 中] "
+        "[src:src_a:v1, ev=ev-1, chunk=chk_a, p.1]\n\n"
+        "增长由价格\n驱动。\n"
+    )
+
+    errors = validate_claims(
+        _two_question_claims(),
+        state.project_dir,
+        _repository(),
+        analysis_text=analysis,
+    )
+
+    assert errors == []
+
+
+def test_claim_body_check_is_skipped_without_analysis_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """不传 analysis_text 时跳过正文对应校验，保持既有调用方行为不变。"""
+    state = _state(tmp_path, monkeypatch)
+    _record_evidence(state, evidence_id="ev-1", question_id="q1", status=VerificationStatus.SUPPORTED)
+
+    errors = validate_claims(
+        _two_question_claims(
+            {
+                "claim_id": "c3",
+                "question_id": "q2",
+                "kind": "judgment",
+                "importance": "major",
+                "text": "正文里没有这句话",
+            }
+        ),
+        state.project_dir,
+        _repository(),
+    )
+
+    assert errors == []
+
+
+# ═══════════════════════════════════════════════════════════════
 # load_claims_file
 # ═══════════════════════════════════════════════════════════════
 
@@ -310,66 +421,173 @@ def test_load_claims_file_damaged(tmp_path: Path) -> None:
         load_claims_file(path)
 
 
-# ═══════════════════════════════════════════════════════════════
-# 门禁③：终稿保留 critical 结论
-# ═══════════════════════════════════════════════════════════════
-
-
-def test_final_report_missing_critical_claim_blocks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_load_claims_file_normalizes_high_importance_to_major(
+    tmp_path: Path,
 ) -> None:
-    state = _state(tmp_path, monkeypatch)
-    _claims_file(
-        state.project_dir / config.FILE_CLAIMS,
+    path = _claims_file(
+        tmp_path / "04_claims.json",
         [
             {
                 "claim_id": "c1",
                 "question_id": "q1",
                 "kind": "fact",
-                "importance": "critical",
-                "text": "2026 年 NAND 资本开支仅 +5% 至 $222 亿",
+                "importance": "high",
+                "text": "营收达 4200 万",
                 "supporting_evidence_ids": ["ev-1"],
+                "confidence": "high",
             }
         ],
     )
-    report_path = state.project_dir / config.FILE_FINAL_REPORT
-    report_path.write_text("这是一份没有包含关键结论的报告。", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="critical 结论"):
-        formatter._audit_final_report_claims(state, report_path)
+    claims = load_claims_file(path)
+
+    assert claims.claims[0].importance == "major"
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["claims"][0]["importance"] == "major"
 
 
-def test_final_report_preserving_critical_claim_passes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_load_claims_file_normalizes_all_confidence_aliases(
+    tmp_path: Path,
 ) -> None:
-    state = _state(tmp_path, monkeypatch)
-    _claims_file(
-        state.project_dir / config.FILE_CLAIMS,
+    """confidence 的三个取值写进 importance 时都要归一化，而非只修 `high`。
+
+    实测失败里 `medium` / `low` 同样出现过；只修 `high` 会让同一类笔误继续
+    整轮作废。归一化后一律落在不新增约束的档位，不会有 claim 被悄悄升级成
+    critical 并因此触发终稿逐字保留门禁。
+    """
+    path = _claims_file(
+        tmp_path / "04_claims.json",
         [
             {
                 "claim_id": "c1",
                 "question_id": "q1",
                 "kind": "fact",
-                "importance": "critical",
-                "text": "2026 年 NAND 资本开支仅 +5% 至 $222 亿",
+                "importance": "medium",
+                "text": "营收达 4200 万",
                 "supporting_evidence_ids": ["ev-1"],
-            }
+                "confidence": "medium",
+            },
+            {
+                "claim_id": "c2",
+                "question_id": "q1",
+                "kind": "judgment",
+                "importance": "low",
+                "text": "增速可能放缓",
+                "supporting_evidence_ids": [],
+                "confidence": "low",
+            },
         ],
     )
-    report_path = state.project_dir / config.FILE_FINAL_REPORT
+
+    claims = load_claims_file(path)
+
+    assert [item.importance for item in claims.claims] == ["major", "minor"]
+    assert all(item.importance != "critical" for item in claims.claims)
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert [item["importance"] for item in persisted["claims"]] == ["major", "minor"]
+
+
+# ═══════════════════════════════════════════════════════════════
+# 门禁③：终稿必须是 Agent4 正文逐字复制 + 图表占位符
+# ═══════════════════════════════════════════════════════════════
+
+
+def _manifest(*chart_ids: str):
+    """构造只含 id 与 placement_after 的最小图表清单。"""
+    from research_agent.report_charts import ChartManifest
+
+    return ChartManifest.model_validate(
+        {
+            "charts": [
+                {
+                    "id": chart_id,
+                    "type": "bar",
+                    "title": f"图 {chart_id}",
+                    "unit": "亿元",
+                    "as_of_date": "2026-08-17",
+                    "source": "公开资料整理",
+                    "placement_after": "# 分析",
+                    "labels": ["2025"],
+                    "series": [
+                        {
+                            "name": "营收",
+                            "values": [1],
+                            "value_kind": ["actual"],
+                        }
+                    ],
+                }
+                for chart_id in chart_ids
+            ]
+        }
+    )
+
+
+def test_composed_report_matching_analysis_passes(tmp_path: Path) -> None:
+    """终稿等于正文逐字加占位符时通过。"""
+    analysis_path = tmp_path / config.FILE_ANALYSIS
+    analysis_path.write_text("# 分析\n\n营收 4200 万。\n", encoding="utf-8")
+    report_path = tmp_path / config.FILE_FINAL_REPORT
     report_path.write_text(
-        "结论：2026 年 NAND 资本开支仅 +5% 至 $222 亿。", encoding="utf-8"
+        "# 分析\n\n{{chart:c-1}}\n\n营收 4200 万。\n", encoding="utf-8"
     )
 
-    formatter._audit_final_report_claims(state, report_path)
+    formatter._audit_composed_report(analysis_path, report_path, _manifest("c-1"))
 
 
-def test_final_report_missing_claims_file_blocks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_composed_report_dropping_analysis_line_blocks(tmp_path: Path) -> None:
+    """compose 丢行必须被发现。
+
+    终稿由程序生成，一旦 compose 被改坏就会悄悄偏离已通过 Agent4 门禁的正文，
+    而没有任何其他检查会察觉。
+    """
+    analysis_path = tmp_path / config.FILE_ANALYSIS
+    analysis_path.write_text(
+        "# 分析\n\n营收 4200 万。\n\n毛利率 38%。\n", encoding="utf-8"
+    )
+    report_path = tmp_path / config.FILE_FINAL_REPORT
+    report_path.write_text("# 分析\n\n营收 4200 万。\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="与 Agent4 正文不一致"):
+        formatter._audit_composed_report(analysis_path, report_path, _manifest())
+
+
+def test_composed_report_rewriting_analysis_blocks(tmp_path: Path) -> None:
+    """compose 改写正文措辞必须被发现。"""
+    analysis_path = tmp_path / config.FILE_ANALYSIS
+    analysis_path.write_text("# 分析\n\n营收 4200 万。\n", encoding="utf-8")
+    report_path = tmp_path / config.FILE_FINAL_REPORT
+    report_path.write_text("# 分析\n\n营收约 4200 万元。\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="与 Agent4 正文不一致"):
+        formatter._audit_composed_report(analysis_path, report_path, _manifest())
+
+
+def test_composed_report_missing_declared_placeholder_blocks(
+    tmp_path: Path,
 ) -> None:
-    state = _state(tmp_path, monkeypatch)
-    report_path = state.project_dir / config.FILE_FINAL_REPORT
-    report_path.write_text("报告正文", encoding="utf-8")
+    """图表清单声明了占位符，终稿里却没有插入。"""
+    analysis_path = tmp_path / config.FILE_ANALYSIS
+    analysis_path.write_text("# 分析\n\n营收 4200 万。\n", encoding="utf-8")
+    report_path = tmp_path / config.FILE_FINAL_REPORT
+    report_path.write_text("# 分析\n\n营收 4200 万。\n", encoding="utf-8")
 
-    with pytest.raises(RuntimeError, match="结论保留审计失败"):
-        formatter._audit_final_report_claims(state, report_path)
+    with pytest.raises(RuntimeError, match="缺少图表清单声明的占位符"):
+        formatter._audit_composed_report(analysis_path, report_path, _manifest("c-1"))
+
+
+def test_composed_report_extra_text_appended_blocks(tmp_path: Path) -> None:
+    """在正文之后追加内容（例如证据附录）必须被发现。
+
+    上一版 Agent5 会追加自动生成的证据索引与结论补丁，占到报告 46%；新架构
+    禁止任何追加，这条测试锁住该约束。
+    """
+    analysis_path = tmp_path / config.FILE_ANALYSIS
+    analysis_path.write_text("# 分析\n\n营收 4200 万。\n", encoding="utf-8")
+    report_path = tmp_path / config.FILE_FINAL_REPORT
+    report_path.write_text(
+        "# 分析\n\n营收 4200 万。\n\n## 可追溯证据索引\n\n- 证据一\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="与 Agent4 正文不一致"):
+        formatter._audit_composed_report(analysis_path, report_path, _manifest())

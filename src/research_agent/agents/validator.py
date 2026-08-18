@@ -15,8 +15,14 @@ from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..llm import LLMClient
 from ..research_plan import plan_prompt_context
-from ..sources.models import ResearchTask
-from ..sources.tasks import load_tasks_file, write_tasks_file, config_tasks_path
+from ..sources.models import ResearchTaskUpdate
+from ..sources.tasks import (
+    apply_feedback_tasks,
+    config_tasks_path,
+    load_task_execution_report,
+    load_tasks_file,
+    task_results_path,
+)
 from ..tools import default_registry
 from .source_context import source_context
 
@@ -48,20 +54,52 @@ class ValidationFeedback(BaseModel):
     round: int
     converged: bool
     summary: str = ""
-    drop_sources: list[str] = []
-    retain_sources: list[str] = []
-    gap_list: list[str] = []
-    need_rework_topics: list[str] = []
-    conflicts: list[ConflictItem] = []
-    next_round_focus: list[str] = []
-    # R3：结构化补研任务（每轮重写完整清单，含历史任务的最新状态）
-    tasks: list[ResearchTask] = Field(default_factory=list)
+    drop_sources: list[str] = Field(default_factory=list)
+    retain_sources: list[str] = Field(default_factory=list)
+    gap_list: list[str] = Field(default_factory=list)
+    need_rework_topics: list[str] = Field(default_factory=list)
+    conflicts: list[ConflictItem] = Field(default_factory=list)
+    next_round_focus: list[str] = Field(default_factory=list)
+    tasks: list[ResearchTaskUpdate] = Field(default_factory=list)
 
 
 def load_feedback(path: Path) -> ValidationFeedback:
-    """从磁盘读取并校验反馈 JSON。"""
+    """从磁盘读取并校验反馈 JSON。
+
+    Agent 输出偶尔会把纯分析任务的独立来源数写成 0。任务台账不允许绕过
+    证据门槛，因此在模型输出边界保守提升为 1；严格的持久化模型仍保持
+    ``ge=1``，其他结构错误继续 fail-closed。
+    """
     data = json.loads(path.read_text(encoding="utf-8"))
-    return ValidationFeedback(**data)
+    normalized = []
+    tasks = data.get("tasks") if isinstance(data, dict) else None
+    if isinstance(tasks, list):
+        for index, task in enumerate(tasks):
+            if not isinstance(task, dict):
+                continue
+            value = task.get("required_independent_sources")
+            if isinstance(value, bool):
+                continue
+            try:
+                source_count = int(value)
+            except (TypeError, ValueError):
+                continue
+            if source_count < 1:
+                task["required_independent_sources"] = 1
+                normalized.append(index)
+
+    feedback = ValidationFeedback(**data)
+    if normalized:
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        locations = ", ".join(f"tasks.{index}" for index in normalized)
+        console.print(
+            "[yellow]反馈任务的 required_independent_sources 小于 1，"
+            f"已按最低证据门槛纠正为 1：{locations}[/yellow]"
+        )
+    return feedback
 
 
 def _previous_tasks_context(previous_tasks, round_idx: int) -> str:
@@ -90,8 +128,8 @@ def _previous_tasks_context(previous_tasks, round_idx: int) -> str:
         "验收规则：",
         "- 本轮已补齐该任务要求的证据 → 状态改 `completed`，并在 `completed_evidence_ids` 回填证据 ID",
         "- 本轮仍无法补齐 → 保持 `pending`（继续下轮）或改 `blocked` 并在 `blocked_reason` 写明原因",
-        "- 任务已不再需要 → 改 `waived`",
-        "- 最终输出的 `tasks` 必须是**完整清单**（含历史任务的最新状态 + 本轮新任务），不要只输出本轮新增的。",
+        "- 不得自行改为 `waived`；豁免必须由显式人工操作写入台账",
+        "- 需要变更状态的历史任务必须输出；未输出的任务由程序原样保留。",
     ]
     return "\n".join(lines) + "\n"
 
@@ -117,6 +155,8 @@ async def run_validation(
     raw_dir = state.project_dir / config.FILE_RAW_DATA_DIR
     feedback_path = raw_dir / config.FILE_FEEDBACK_ROUND.format(n=round_idx)
     validation_report_path = state.project_dir / config.FILE_VALIDATION
+    task_execution_path = task_results_path(state, round_idx)
+    load_task_execution_report(state, round_idx, task_execution_path)
 
     sources_list_path = (
         Path(state.sources_final_path)
@@ -157,6 +197,7 @@ async def run_validation(
         "{previous_rounds}": previous_rounds_str,
         "{previous_feedback}": previous_feedback_str,
         "{feedback_path}": str(feedback_path),
+        "{task_results_path}": str(task_execution_path),
         "{validation_report_path}": str(validation_report_path),
         "{tasks_path}": str(tasks_path),
         "{N}": str(round_idx),
@@ -226,10 +267,7 @@ async def run_validation(
     if feedback.round != round_idx:
         feedback.round = round_idx
 
-    # R3：每轮重写任务台账（Agent3 输出的 tasks 是合并历史后的完整清单）。
-    from ..sources.models import ResearchTasksFile
-
-    write_tasks_file(tasks_path, ResearchTasksFile(tasks=feedback.tasks))
+    apply_feedback_tasks(state, feedback)
 
     console.print(
         f"\n[green]✓ 第 {round_idx} 轮验证完成 | converged="

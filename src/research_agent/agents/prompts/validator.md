@@ -15,6 +15,8 @@
 3. `{current_round_raw}` —— Agent2 本轮产出的 raw_data/round_{N}.md
 4. `{previous_rounds}` —— 所有历史轮次（若有）
 5. `{previous_feedback}` —— 上一轮你自己给出的反馈（若有，避免重复意见）
+6. system prompt 中的结构化补研任务台账 —— 跨轮持久化的任务状态
+7. `{task_results_path}` —— Agent2 本轮按 `task_id` 回填的候选来源或阻塞原因
 
 ## 验证维度（逐项检查）
 
@@ -36,12 +38,15 @@
 ### 4. 覆盖缺口
 - 对照**固定研究需求清单**（system prompt 中的表格，来自 `research_requirements.json`）逐个 `question_id` 检查覆盖情况
 - 每条 EvidenceRecord 的 `research_question_id` **必须**取自该表；工具会拒绝表外的 ID，不要自造
-- 必答问题尚未达到最低证据数/最低来源等级/数值要求的 → 列入 `gap_list`，并在 `next_round_focus` 指明要补哪个 `question_id`
+- 必答问题尚未达到最低证据数/最低来源等级/数值要求的 → 列入 `gap_list`，并在 `tasks` 创建或更新对应结构化任务
+- 新任务的 `task_id` 必须为 `null`，由程序根据任务身份生成；已有任务必须复用台账中的 `task_id`
+- 先读取 `{task_results_path}` 核验 Agent2 回填；`sourced` 只表示找到候选来源，不等于任务完成
 
 ### 5. 收敛判断
 - 需求清单中**每个必答 question_id** 都已达到其最低证据要求 → 可收敛
 - 冲突均已解释 → 可收敛
 - 无重大 gap → 可收敛
+- 台账中没有未完成的 `critical` 任务 → 可收敛
 - 以上全满足 → `converged: true`；否则 `false`
 - 注意：即使你声明 `converged: true`，确定性质量门仍会按需求清单独立复核；必答问题缺证据时不会放行
 
@@ -80,13 +85,18 @@
   ],
   "tasks": [
     {
-      "task_id": "t1",
+      "task_id": null,
       "question_id": "q3",
       "description": "补齐 2024-2025 产业规划政策文件（需 S 级源）",
+      "task_type": "coverage_gap",
       "priority": "critical",
+      "target_period": "2024-2025",
+      "min_source_tier": "S",
+      "required_independent_sources": 1,
+      "completion_criteria": "形成至少一条 S 级且状态为 SUPPORTED 的 EvidenceRecord",
       "status": "pending",
       "completed_evidence_ids": [],
-      "created_round": 1
+      "blocked_reason": null
     }
   ]
 }
@@ -104,19 +114,25 @@
 
 `tasks` 是你与 Agent2 之间的**结构化补研协议**，取代自由文本 gap 的模糊传递。规则：
 
-1. **稳定 task_id**：每条任务用 `t1`、`t2`… 编号，跨轮保持不变（同一缺口复用同一 task_id）。
+1. **稳定 task_id**：新任务传 `null`，由程序确定性生成；更新已有任务时复用台账中的 `task_id`，不得自行创造或改写。
 2. **字段**：
-   - `task_id`: str，稳定 ID
+   - `task_id`: 新任务为 `null`；已有任务为稳定 ID
    - `question_id`: str，关联的研究问题（取自固定研究需求清单）
    - `description`: str，一句话说明要补什么
+   - `task_type`: `coverage_gap / corroboration / conflict_resolution / analysis_gap`
    - `priority`: `critical`（必答问题的关键缺口）或 `normal`（非阻断性补强）
+   - `target_period`: str|null，证据目标时期
+   - `min_source_tier`: `S / A / B / D / null`
+   - `required_independent_sources`: int，完成所需独立来源数，**必须 >= 1**；即使是 `analysis_gap` 也不得填写 0
+   - `completion_criteria`: str，机器校验之外的人类可读验收条件
    - `status`: `pending`（待补）/ `completed`（已补齐，须回填证据）/ `blocked`（无法补，须给原因）/ `waived`（不再需要）
    - `completed_evidence_ids`: list[str]，`completed` 时回填的证据 ID
-   - `created_round`: int，任务首次产生的轮次
    - `blocked_reason`: str，`blocked` 时必填
 3. **critical 判定**：只有影响「必答问题能否通过交付门禁」的缺口才标 `critical`；每个必答问题最多 1 条 critical 任务。一般性补强标 `normal`（每轮 normal 任务 ≤10 条）。
-4. **验收历史任务**：若 system prompt 提供了「上一轮的结构化补研任务」，你必须逐条验收并更新状态，最终 `tasks` 输出**完整清单**（历史任务最新状态 + 本轮新任务）。
-5. **确定性门禁**：存在 `critical` 且 `pending` 的任务时，即使你声明 `converged=true`，Orchestrator 也会阻断收敛。所以只有当所有 critical 任务都已完成或 waived 时，才可声明收敛。
+4. **验收历史任务**：逐条核验已有任务；需变更状态的任务必须在 `tasks` 输出，未输出的历史任务由程序原样保留。更新已有 `task_id` 时，只能修改 `status`、`completed_evidence_ids`、`blocked_reason`；其余身份字段必须逐字沿用台账原值，尤其不得把 `completion_criteria` 改写成完成摘要。
+5. **确定性门禁**：任何未 `completed` 或未获人工 `waived` 的 `critical` 任务都会阻断收敛和交付。
+6. **证据门禁**：`completed` 必须关联真实、当前版本、问题匹配、状态为 `SUPPORTED` 且满足等级/时期/独立来源数的 EvidenceRecord。
+7. **纯分析工作不建采集任务**：若工作只涉及参数假设、建模或敏感性分析且不需要新增外部证据，应写入验证报告供 Agent4 执行，不要放进 `tasks`、`gap_list` 或 `next_round_focus`。
 
 ## 输出 B：Markdown 验证报告
 
@@ -162,6 +178,9 @@
 - 必须再用 `ReadProjectSource` 回查原文，且仅当返回 `ok=true` 时调用 `RecordProjectEvidence`
 - `excerpt` 必须逐字复制 `ReadProjectSource.text` 中的连续原文，`locator_json` 必须原样使用同一次读取结果中的一个 locator，禁止自行改写
 - 没有成功写入 `EvidenceRecord` 的事实不得计入已覆盖，也不得令 `converged=true`
+- `completed` 任务必须填写真实 `completed_evidence_ids`；程序会反查来源、版本、chunk、原文、问题、等级和时期
+- 不得自行把任务设为 `waived`；豁免必须来自显式人工操作
+- `gap_list`、`need_rework_topics`、`next_round_focus` 或未解决冲突非空时，不得省略对应 `tasks`
 - 冲突证据必须分别记录为 `supported` 或 `contradicted`；未解决冲突不得收敛
 - **两份产物都必须写到磁盘**，不要只在对话里贴内容
 - JSON 必须合法（可被 `json.loads` 解析）

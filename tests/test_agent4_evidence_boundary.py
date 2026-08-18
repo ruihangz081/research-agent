@@ -290,6 +290,12 @@ async def test_needs_more_research_blocks_agent5_and_persists_gap(
     assert state.stage == Stage.ANALYZING
     assert state.notes["analysis_gap_requests"][0]["question_id"] == "q1"
     assert state.failed_stage == "Agent4·补研请求"
+    from research_agent.sources.tasks import config_tasks_path, load_tasks_file
+
+    ledger = load_tasks_file(config_tasks_path(state.project_dir))
+    assert len(ledger.tasks) == 1
+    assert ledger.tasks[0].task_type == "analysis_gap"
+    assert ledger.tasks[0].priority == "critical"
 
 
 @pytest.mark.anyio
@@ -326,7 +332,7 @@ async def test_supported_analysis_citation_allows_agent5(
     calls = await _run_from_analysis(
         state,
         monkeypatch,
-        f"Verified fact {citation}",
+        f"Revenue reached 42 million {citation}",
     )
 
     assert calls == ["Agent4", "Agent5"]
@@ -616,7 +622,7 @@ async def test_research_retry_repasses_quality_before_agent4_and_agent5(
         calls.append("Agent4")
         path = current.project_dir / config.FILE_ANALYSIS
         path.write_text(
-            f"Verified fact {citation}",
+            f"Revenue reached 42 million {citation}",
             encoding="utf-8",
         )
         _write_outcome(current)

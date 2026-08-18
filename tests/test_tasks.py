@@ -10,9 +10,14 @@ from research_agent import config
 from research_agent.sources.models import ResearchTask, ResearchTasksFile
 from research_agent.sources.tasks import (
     TasksError,
+    _period_matches,
+    apply_feedback_tasks,
     blocking_pending_tasks,
+    ensure_analysis_gap_tasks,
+    load_task_execution_report,
     load_tasks_file,
     pending_tasks,
+    task_results_path,
     tasks_prompt_context,
     write_tasks_file,
 )
@@ -101,6 +106,12 @@ def test_load_tasks_file_damaged(tmp_path: Path) -> None:
     path.write_text("{broken", encoding="utf-8")
     with pytest.raises(TasksError, match="无法解析"):
         load_tasks_file(path)
+
+
+def test_task_target_year_range_accepts_concrete_report_date() -> None:
+    assert _period_matches("2026-07-15", "2026-2027") is True
+    assert _period_matches("2027 年年度报告", "2026-2027") is True
+    assert _period_matches("2025-12-31", "2026-2027") is False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -283,6 +294,22 @@ def _prepared_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             confidence=1,
         )
     )
+    service.record_evidence(
+        EvidenceRecord(
+            evidence_id="ev-other-question",
+            project_id=state.project_dir.name,
+            research_question_id="q2",
+            claim="Revenue reached 42 million",
+            source_id=source.source_id,
+            source_version=source.version,
+            chunk_id=chunk.chunk_id,
+            locator=chunk.locators[0],
+            excerpt="Revenue reached 42 million",
+            source_tier="S",
+            verification_status=VerificationStatus.SUPPORTED,
+            confidence=1,
+        )
+    )
     return state, repository
 
 
@@ -378,5 +405,384 @@ def test_normal_pending_task_does_not_block_convergence(
         feedback = ValidationFeedback(round=1, converged=True)
         assert _deterministic_convergence(state, feedback) is True
         assert state.notes["pending_critical_tasks"] == []
+    finally:
+        repository.close()
+
+
+def test_load_feedback_repairs_zero_independent_source_count(tmp_path: Path) -> None:
+    from research_agent.agents.validator import load_feedback
+
+    feedback_path = tmp_path / "feedback_round_2.json"
+    payload = {
+        "round": 2,
+        "converged": False,
+        "tasks": [
+            {
+                "task_id": None,
+                "question_id": "q1",
+                "description": "完成 DCF 参数化与敏感性分析",
+                "task_type": "analysis_gap",
+                "priority": "normal",
+                "required_independent_sources": 0,
+                "status": "pending",
+            }
+        ],
+    }
+    feedback_path.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    feedback = load_feedback(feedback_path)
+
+    assert feedback.tasks[0].required_independent_sources == 1
+    persisted = json.loads(feedback_path.read_text(encoding="utf-8"))
+    assert persisted["tasks"][0]["required_independent_sources"] == 1
+
+
+# ═══════════════════════════════════════════════════════════════
+# 远端 R3 基线上的强化契约
+# ═══════════════════════════════════════════════════════════════
+
+
+def _task_update(
+    *,
+    task_id: str | None = None,
+    status: str = "pending",
+    priority: str = "critical",
+    completed_evidence_ids: list[str] | None = None,
+) -> dict:
+    return {
+        "task_id": task_id,
+        "question_id": "q1",
+        "description": "补齐 2025 年市场规模",
+        "task_type": "coverage_gap",
+        "priority": priority,
+        "target_period": None,
+        "min_source_tier": "A",
+        "required_independent_sources": 1,
+        "completion_criteria": "形成一条 A 级及以上的 SUPPORTED EvidenceRecord",
+        "status": status,
+        "completed_evidence_ids": completed_evidence_ids or [],
+    }
+
+
+def test_feedback_retry_reuses_system_derived_task_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_agent.agents.validator import ValidationFeedback
+
+    state, repository = _prepared_state(tmp_path, monkeypatch)
+    try:
+        first = apply_feedback_tasks(
+            state,
+            ValidationFeedback(round=1, converged=False, tasks=[_task_update()]),
+        )
+        second = apply_feedback_tasks(
+            state,
+            ValidationFeedback(round=2, converged=False, tasks=[_task_update()]),
+        )
+        assert len(second.tasks) == 1
+        assert second.tasks[0].task_id == first.tasks[0].task_id
+        assert second.tasks[0].task_id.startswith("rt_")
+        assert second.tasks[0].created_round == 1
+        assert second.tasks[0].updated_round == 2
+    finally:
+        repository.close()
+
+
+def test_task_completion_requires_real_supported_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_agent.agents.validator import ValidationFeedback
+
+    state, repository = _prepared_state(tmp_path, monkeypatch)
+    try:
+        pending = apply_feedback_tasks(
+            state,
+            ValidationFeedback(round=1, converged=False, tasks=[_task_update()]),
+        )
+        task_id = pending.tasks[0].task_id
+
+        with pytest.raises(TasksError, match="unknown EvidenceRecord"):
+            apply_feedback_tasks(
+                state,
+                ValidationFeedback(
+                    round=2,
+                    converged=True,
+                    tasks=[
+                        _task_update(
+                            task_id=task_id,
+                            status="completed",
+                            completed_evidence_ids=["fabricated"],
+                        )
+                    ],
+                ),
+            )
+
+        completed = apply_feedback_tasks(
+            state,
+            ValidationFeedback(
+                round=2,
+                converged=True,
+                tasks=[
+                    _task_update(
+                        task_id=task_id,
+                        status="completed",
+                        completed_evidence_ids=["ev-1"],
+                    )
+                ],
+            ),
+        )
+        assert completed.tasks[0].status == "completed"
+        assert completed.tasks[0].source_ids
+    finally:
+        repository.close()
+
+
+def test_task_completion_ignores_evidence_from_another_question(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_agent.agents.validator import ValidationFeedback
+
+    state, repository = _prepared_state(tmp_path, monkeypatch)
+    try:
+        pending = apply_feedback_tasks(
+            state,
+            ValidationFeedback(round=1, converged=False, tasks=[_task_update()]),
+        )
+        completed = apply_feedback_tasks(
+            state,
+            ValidationFeedback(
+                round=2,
+                converged=True,
+                tasks=[
+                    _task_update(
+                        task_id=pending.tasks[0].task_id,
+                        status="completed",
+                        completed_evidence_ids=["ev-1", "ev-other-question"],
+                    )
+                ],
+            ),
+        )
+
+        assert completed.tasks[0].completed_evidence_ids == ["ev-1"]
+    finally:
+        repository.close()
+
+
+def test_task_completion_without_enough_sources_stays_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_agent.agents.validator import ValidationFeedback
+
+    state, repository = _prepared_state(tmp_path, monkeypatch)
+    try:
+        update = _task_update()
+        update["required_independent_sources"] = 2
+        pending = apply_feedback_tasks(
+            state,
+            ValidationFeedback(round=1, converged=False, tasks=[update]),
+        )
+        merged = apply_feedback_tasks(
+            state,
+            ValidationFeedback(
+                round=2,
+                converged=True,
+                tasks=[
+                    _task_update(
+                        task_id=pending.tasks[0].task_id,
+                        status="completed",
+                        completed_evidence_ids=["ev-1"],
+                    )
+                ],
+            ),
+        )
+
+        assert merged.tasks[0].status == "pending"
+        assert state.notes["rejected_research_task_completions"] == [
+            {
+                "task_id": pending.tasks[0].task_id,
+                "qualifying_independent_sources": 1,
+                "required_independent_sources": 2,
+            }
+        ]
+    finally:
+        repository.close()
+
+
+def test_existing_task_identity_changes_are_ignored_without_weakening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_agent.agents.validator import ValidationFeedback
+
+    state, repository = _prepared_state(tmp_path, monkeypatch)
+    try:
+        ledger = apply_feedback_tasks(
+            state,
+            ValidationFeedback(round=1, converged=False, tasks=[_task_update()]),
+        )
+        update = _task_update(
+            task_id=ledger.tasks[0].task_id,
+            status="completed",
+            priority="normal",
+            completed_evidence_ids=["ev-1"],
+        )
+        update["completion_criteria"] = "已完成：本轮找到一条证据"
+
+        merged = apply_feedback_tasks(
+            state,
+            ValidationFeedback(round=2, converged=False, tasks=[update]),
+        )
+
+        task = merged.tasks[0]
+        assert task.status == "completed"
+        assert task.priority == "critical"
+        assert task.completion_criteria == _task_update()["completion_criteria"]
+        assert task.completed_evidence_ids == ["ev-1"]
+        assert state.notes["normalized_research_task_updates"] == [task.task_id]
+    finally:
+        repository.close()
+
+
+def test_agent2_execution_report_requires_real_sources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_agent.agents.validator import ValidationFeedback
+
+    state, repository = _prepared_state(tmp_path, monkeypatch)
+    try:
+        ledger = apply_feedback_tasks(
+            state,
+            ValidationFeedback(round=1, converged=False, tasks=[_task_update()]),
+        )
+        result_path = task_results_path(state, 2)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "round": 2,
+                    "results": [
+                        {
+                            "task_id": ledger.tasks[0].task_id,
+                            "status": "sourced",
+                            "source_ids": ["fabricated"],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(TasksError, match="unknown source_id"):
+            load_task_execution_report(state, 2)
+    finally:
+        repository.close()
+
+
+def test_agent2_execution_report_cannot_omit_critical_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_agent.agents.validator import ValidationFeedback
+
+    state, repository = _prepared_state(tmp_path, monkeypatch)
+    try:
+        apply_feedback_tasks(
+            state,
+            ValidationFeedback(round=1, converged=False, tasks=[_task_update()]),
+        )
+        result_path = task_results_path(state, 2)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(
+            json.dumps({"schema_version": "1.0", "round": 2, "results": []}),
+            encoding="utf-8",
+        )
+        with pytest.raises(TasksError, match="omitted critical task_id"):
+            load_task_execution_report(state, 2)
+    finally:
+        repository.close()
+
+
+def test_free_text_gap_requires_structured_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_agent.agents.validator import ValidationFeedback
+
+    state, repository = _prepared_state(tmp_path, monkeypatch)
+    try:
+        with pytest.raises(TasksError, match="without a structured task"):
+            apply_feedback_tasks(
+                state,
+                ValidationFeedback(
+                    round=1,
+                    converged=False,
+                    gap_list=["缺少关键数据"],
+                    tasks=[],
+                ),
+            )
+    finally:
+        repository.close()
+
+
+def test_agent4_gap_enters_same_canonical_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state, repository = _prepared_state(tmp_path, monkeypatch)
+    try:
+        first = ensure_analysis_gap_tasks(
+            state,
+            [
+                {
+                    "question_id": "q1",
+                    "reason": "缺少 2026 年数据",
+                    "needed_evidence": "一条可验证的 2026 年数据",
+                }
+            ],
+            round_idx=2,
+        )
+        second = ensure_analysis_gap_tasks(
+            state,
+            [
+                {
+                    "question_id": "q1",
+                    "reason": "缺少 2026 年数据",
+                    "needed_evidence": "一条可验证的 2026 年数据",
+                }
+            ],
+            round_idx=3,
+        )
+        assert len(second.tasks) == 1
+        assert second.tasks[0].task_id == first.tasks[0].task_id
+        assert second.tasks[0].task_type == "analysis_gap"
+        assert second.tasks[0].priority == "critical"
+    finally:
+        repository.close()
+
+
+def test_delivery_gate_blocks_unfinished_critical_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from research_agent.orchestrator import DeliveryBlockedError, _assert_delivery_ready
+
+    state, repository = _prepared_state(tmp_path, monkeypatch)
+    try:
+        write_tasks_file(
+            state.project_dir / config.FILE_TASKS,
+            ResearchTasksFile(
+                tasks=[
+                    ResearchTask(
+                        task_id="rt_blocking",
+                        question_id="q1",
+                        description="补齐关键证据",
+                        priority="critical",
+                        status="pending",
+                        created_round=1,
+                    )
+                ]
+            ),
+        )
+        with pytest.raises(DeliveryBlockedError, match="rt_blocking"):
+            _assert_delivery_ready(state)
+        assert state.notes["delivery_blocked_stage"] == "research_tasks"
     finally:
         repository.close()

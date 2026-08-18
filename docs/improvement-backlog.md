@@ -33,7 +33,7 @@
 |---|---|---|
 | R1 | 研究要求由已有证据反推，存在完整性盲区 | ✅ 2026-07-30 |
 | R2 | Agent4 可绕过证据链引入新事实 | ✅ 2026-07-30 |
-| R3 | Agent2↔3 缺少结构化补研任务协议 | 待处理 |
+| R3 | Agent2↔3 缺少结构化补研任务协议 | ✅ 2026-08-17 |
 | R4 | 缺少 Claim—Evidence 关系与报告引用覆盖门禁 | 待处理 |
 | R5 | Agent 文件工具缺少项目目录强制隔离 | 待处理 |
 | R6 | 缺少研究质量、稳定性与成本评测体系 | 待处理 |
@@ -263,7 +263,7 @@ Agent4 的工具白名单仍包含 `WebSearch` 和 `WebFetch`。它可以在 Age
 
 ## R3. Agent2↔3 缺少结构化补研任务协议
 
-- [ ] 待处理
+- [x] 已完成（2026-08-17）—— 以远端 `03_tasks.json` / `feedback.tasks` 为唯一协议，补齐确定性 ID、证据验收、Agent2 回填和 Agent4 入账
 
 **问题**
 
@@ -280,6 +280,14 @@ Agent3 当前通过 `feedback_round_N.json` 向下一轮 Agent2 反馈缺口，�
 - 完成后关联的 `source_id`、`evidence_id` 和未完成原因
 
 Agent3 负责创建和验收任务，Agent2 负责执行和回填；Orchestrator 根据未完成的高优先级任务决定是否继续下一轮。
+
+**落地结果**
+
+- 新任务由程序根据 `question_id`、任务类型、优先级、时期、来源门槛、独立来源数和完成条件生成稳定 `rt_...` ID；已有任务不能通过降低门槛改变身份。
+- Agent2 每轮写入 `03_raw_data/task_results_round_N.json`，遗漏 critical 任务、伪造 task/source ID 或轮次不一致会失败。
+- Agent3 只能用真实、当前版本、问题匹配、原文可回查且状态为 `SUPPORTED` 的 EvidenceRecord 完成任务，并校验来源等级、时期和独立来源数量。
+- 未完成 critical 任务同时阻断确定性收敛和 Agent5 交付；Agent4 的 `needs_more_research` 自动写入同一份 `03_tasks.json`。
+- Web 项目 payload 与产物列表暴露任务台账、任务计数、阻断 ID 和逐轮回填文件。全量回归：`336 passed, 5 warnings`。
 
 **验收标准**
 

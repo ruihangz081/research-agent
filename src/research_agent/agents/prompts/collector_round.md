@@ -19,6 +19,9 @@
 2. `{sources_final_list}` —— 最终信息源清单（当前的 source list，含分层）
 3. `{previous_rounds}` —— 此前已产出的 raw_data/round_*.md（若有）
 4. `{feedback_json}` —— 上一轮 Agent3 的反馈（若有）
+5. system prompt 中的结构化补研任务表 —— 本轮必须执行的任务台账
+
+除 Markdown 采集文件外，还必须写出 `{task_results_path}`。即使没有任务，也要写合法 JSON，`results` 为空数组。
 
 ## 反馈消费规则（当 feedback_json 存在时）
 
@@ -49,6 +52,7 @@ system prompt 可能注入「结构化补研任务」表（来自 `03_tasks.json
 5. 用 WebSearch 发现公开来源；任何准备采用的网页事实都必须先调用 `CaptureProjectWebSource(project_id="{project_id}", url=..., source_tier=...)`，把网页快照保存到当前项目
 6. 使用工具返回的真实 `source_id` 标注事实；必要时用 `SearchProjectSources` / `ReadProjectSource` 回读快照。仅 WebFetch、未入库的网页内容不得写入本轮事实
 7. 用 Write 将结果写入 `{round_output_path}`
+8. 用 Write 将逐任务执行结果写入 `{task_results_path}`；不得遗漏 `critical` 未完成任务
 
 其中 S 级只适用于政府、交易所、法定披露平台等原始权威域名；媒体对年报或公告的转述仍是 B 级，工具会对虚高的 S 级自动降级。
 
@@ -93,11 +97,30 @@ system prompt 可能注入「结构化补研任务」表（来自 `03_tasks.json
 - S05 已剔除，相关问题改用 A03 补充
 ```
 
+同时写入严格 JSON 到 `{task_results_path}`：
+
+```json
+{
+  "schema_version": "1.0",
+  "round": 2,
+  "results": [
+    {
+      "task_id": "rt_...",
+      "status": "sourced",
+      "source_ids": ["src_..."],
+      "blocked_reason": null
+    }
+  ]
+}
+```
+
 ## 重要规则
 
 - **必须 Write 到指定路径 `{round_output_path}`**
 - 上传材料是可选补充；没有上传材料时，必须通过 `CaptureProjectWebSource` 自动建立公开网页证据库
 - 未成功捕获为项目来源的网页事实不得保留，也不得把草案源编号伪装成项目 `source_id`
+- 每项任务必须使用台账中的原 `task_id`；Agent2 不得宣布任务 `completed` 或 `waived`
+- 回填状态只能是 `sourced` 或 `blocked`；前者必须提供真实项目 `source_id`，后者必须填写 `blocked_reason`
 - 不确定的数据**不写**，列入"未能获取"
 - 每轮只产出一份 md，不要拆分多文件
 - 完成后用一句话告知"第 N 轮采集完成"，然后结束

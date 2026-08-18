@@ -117,8 +117,9 @@ function previewableArtifacts(project) {
 function renderResearchPlan(project) {
   const plan = project.research_plan || { available: false, requirements: [] };
   const migratePanel = $("planMigratePanel");
-  migratePanel.classList.toggle("hidden", plan.available !== false);
-  if (plan.available === false) {
+  const migrationRequired = plan.available === false && plan.migration_required === true;
+  migratePanel.classList.toggle("hidden", !migrationRequired);
+  if (migrationRequired) {
     $("planMigrateError").textContent = plan.error || "项目缺少 research_requirements.json。";
   }
 
