@@ -1,5 +1,12 @@
 # Research Agent · 可溯源的行业调研 Multi-Agent 工作台
 
+<p align="center">
+  <a href="https://github.com/ruihangz081/research-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10%2B-3776AB.svg" alt="Python 3.10+"></a>
+  <img src="https://img.shields.io/badge/zero-framework-green.svg" alt="零框架依赖">
+  <img src="https://img.shields.io/badge/model-agnostic-7f69ed.svg" alt="模型无关">
+</p>
+
 > **让 AI 做行业研究，但不让它「凭感觉下结论」。**
 
 一条**模型无关**的调研流水线：从提出研究问题，到采集、交叉验证、深度分析，最终交付券商级研究报告——全程由**确定性证据链**把关。模型的自我评价不算数，程序逐条校验：每个结论都必须有真实原文支撑，编造、冲突、无证据即阻断交付。
@@ -15,45 +22,70 @@
   <img src="docs/images/lumitrace-home.png" alt="溯光 Lumitrace 首页" width="100%" />
 </p>
 
+---
+
+## 快速开始
+
+**30 秒跑起来：**
+
+```bash
+# 1. 安装（推荐 uv）
+uv venv --python 3.11 && source .venv/bin/activate
+uv pip install -e '.[web,search]'
+
+# 2. 配置模型
+cp .env.example .env   # 编辑 .env，填入你的 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
+
+# 3. 启动工作台
+SOURCE_DATA_DIR=.data/sources research-agent-web
+# 打开 http://127.0.0.1:8765
+```
+
+**跑一条调研（CLI）：**
+
+```bash
+python -m research_agent new "新能源汽车行业"
+```
+
+详细安装与使用见下方 [安装](#安装) 与 [使用](#使用)。
+
 ## 特点
 
-**架构**
+### 🛡️ 防幻觉，靠程序不靠自觉
 
-- **模型无关**：通过 `LLM_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL` 三个环境变量切换任意模型
-- **零框架依赖**：不依赖 LangChain / claude-agent-sdk / openai SDK，纯 httpx 自建 LLM 客户端与 Agent 循环
-- **5 个专业 Agent 分工协作**：战略规划 → 数据搜集 → 信息验证 → 深度分析 → 排版交付
-- **CLI 与 Web 共用一份状态机**：行为差异全部收敛到注入的 `PipelineHost`，两端不会流程漂移
+这不是「加了提示词让模型别编造」——而是**从工具权限和确定性校验两个层面，让模型物理上无法造假**：
 
-**质量保障**
+- **工具白名单即能力边界**：每个 Agent 只挂载它该有的工具。Agent4 拿不到任何联网或写证据的工具——「不许上网补数据」是程序上做不到，而非 prompt 约束。
+- **模型声明不算收敛**：Agent3 写 `converged: true` 只是建议，程序另跑确定性门禁复核；未解决冲突、critical 补研任务未完成、必答问题证据不足，任一命中即继续补采。
+- **确定性证据链**：每条结论必须保存精确 `EvidenceRecord`，`excerpt` 需真实存在于原文 chunk；未解决矛盾、无效定位或无证据即阻断交付。
+- **结论必须被引用**：Agent4 输出机读结论台账（`04_claims.json`），程序反向校验 critical 结论都有 SUPPORTED 证据、且不在排版阶段丢失。
 
-- **工具白名单即能力边界**：每个 Agent 只挂载它该有的工具。Agent4 拿不到任何联网或写证据的工具，"不许上网补数据"是程序上做不到，而非 prompt 约束
-- **模型声明不算收敛**：Agent3 写 `converged: true` 只是建议，程序另跑确定性门禁复核；未解决冲突、critical 补研任务未完成、必答问题证据不足，任一命中即继续补采
-- **确定性证据链**：Agent 必须保存精确 EvidenceRecord，`excerpt` 需真实存在于原文 chunk；未解决矛盾、无效定位或无证据会阻断交付
-- **结构化补研任务台账**：缺口以带稳定 `task_id` 的任务持久化（`03_tasks.json`），Agent2 逐条执行、Agent3 逐条验收，取代自由文本 gap 的反复理解
-- **结论必须被引用**：Agent4 输出机读结论台账（`04_claims.json`），程序反向校验重要结论都有 SUPPORTED 证据，且 critical 结论不得在排版阶段丢失
-- **信息源 S/A/B/D 四级分层**：默认规则内置，杜绝低质信息
+### 🧩 架构：零框架、单状态机、五层 harness
 
-**人机协作**
+- **零框架依赖**：不依赖 LangChain / claude-agent-sdk / openai SDK，纯 httpx 自建 LLM 客户端与 Agent 循环。
+- **5 个专业 Agent 分工**：战略规划 → 数据搜集 → 信息验证 → 深度分析 → 排版交付，各司其职、权限隔离。
+- **CLI 与 Web 共用一份状态机**：行为差异全部收敛到注入的 `PipelineHost`，两端永不漂移。
+- **模型无关**：`LLM_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL` 三个环境变量切换任意模型。
 
-- **3 个人机确认检查点**：调研提纲、信息源分层、最终数据源清单——确保方向不跑偏
-- **需求澄清对话**：Agent1 判断信息不足时主动提问；CLI 直接在终端问答，Web 在工作台以表单形式回答（可一键全用默认值）
-- **Agent2↔3 迭代循环**：采集→验证→反馈→补采，默认最多 3 轮，数据质量有保障
+### 🤝 人机协作：该把方向盘交回给人时，绝不自动替你做主
 
-**可靠性**
+- **3 个人机确认检查点**：调研提纲、信息源分层、最终数据源清单——方向不跑偏。
+- **需求澄清对话**：Agent1 判断信息不足时主动提问；CLI 终端问答，Web 表单回答（可一键全用默认值）。
+- **Agent2↔3 迭代循环**：采集 → 验证 → 反馈 → 补采，默认最多 3 轮。
 
-- **断点续跑**：任何阶段中断（Ctrl+C / 网络错误 / API 异常），状态自动保存，一行命令恢复
-- **异常自动重试**：每个阶段失败后自动重试 2 次，友好报错；确定性门禁阻断不重试（重跑只会重复同样的结果）
-- **防卡死**：同一工具用同样参数连续 3 次返回相同错误即中止本次执行，不再一路烧到轮次上限
-- **失败可显式重试**：自动重试耗尽或审查未通过后，项目标记为可重试，保留既有产物，在工作台一键重试；不再需要删库重跑
-- **中断自动识别**：服务重启时扫描停在 Agent 执行中的项目，标记为可重试而非静默挂起
+### 🔁 可靠性：中断不怕、失败可救、绝不卡死
 
-**可观测与素材**
+- **断点续跑**：任何阶段中断，状态自动保存，一行命令恢复。
+- **失败可显式重试**：自动重试耗尽或审查未通过后，项目标记为可重试、保留既有产物，一键重试，不再删库重跑。
+- **防卡死**：同一工具同样参数连续 3 次返回相同错误即中止，不再一路烧到轮次上限。
+- **中断自动识别**：服务重启时扫描停在 Agent 执行中的项目，标记为可重试而非静默挂起。
 
-- **执行日志持久化**：每条阶段进展写入项目内 `run_log.jsonl`，服务重启后仍可回溯上次失败前的过程
-- **Token 用量可见**：按阶段累计消耗，首页提供统计卡、52 周热力图、阶段分布与项目排行
-- **多搜索源**：AnySearch / DuckDuckGo（免费）/ SerpAPI / Tavily，可在设置页切换并测试连通性
-- **统一材料中心**：PDF、Office、HTML、图片和压缩包统一解析、OCR、版本化和项目隔离检索
-- **真实混合检索**：关键词、同义词和数值归一化默认可用；配置 Embedding API 后启用真实语义向量融合
+### 📊 可观测与素材：研究过程全程可见、可复用
+
+- **Token 用量可见**：统计卡、52 周热力图、阶段分布与项目排行。
+- **统一材料中心**：PDF、Office、HTML、图片、压缩包统一解析、OCR、版本化、项目隔离检索。
+- **真实混合检索**：关键词、同义词、数值归一化默认可用；配置 Embedding API 后启用语义向量融合。
+- **执行日志持久化**：每条阶段进展写入 `run_log.jsonl`，重启后仍可回溯。
 
 ## 架构
 
