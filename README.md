@@ -1,6 +1,15 @@
-# Research Agent · 通用行业调研 Multi-Agent
+# Research Agent · 可溯源的行业调研 Multi-Agent 工作台
 
-**模型无关**的行业调研自动化流水线。支持任何 OpenAI 兼容 API（OpenAI / DeepSeek / Qwen / Ollama / vLLM / 本地模型）。
+> **让 AI 做行业研究，但不让它「凭感觉下结论」。**
+
+一条**模型无关**的调研流水线：从提出研究问题，到采集、交叉验证、深度分析，最终交付券商级研究报告——全程由**确定性证据链**把关。模型的自我评价不算数，程序逐条校验：每个结论都必须有真实原文支撑，编造、冲突、无证据即阻断交付。
+
+**它不是一个「会搜索的聊天机器人」，而是一套把研究流程工程化、可验证、可断点续跑的工作台。**
+
+- 🔌 **模型无关** — 任何 OpenAI 兼容 API（OpenAI / DeepSeek / Qwen / Ollama / vLLM / 本地模型）
+- 🛡️ **防幻觉** — 证据必须精确指向原文 chunk，编造/冲突/无证据即阻断，而非靠 prompt 约束
+- 🤖 **5 Agent 分工** — 战略规划 → 数据搜集 → 信息验证 → 深度分析 → 排版交付
+- 🖥️ **CLI + Web 双端** — 共用一份状态机，本地工作台可视化全流程与证据链
 
 <p align="center">
   <img src="docs/images/lumitrace-home.png" alt="溯光 Lumitrace 首页" width="100%" />
