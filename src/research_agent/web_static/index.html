@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>溯光 Lumitrace · 本地多智能体调研工作台</title>
     <script>document.documentElement.classList.add("motion-enabled");</script>
-    <link rel="stylesheet" href="/static/styles.css?v=20260817-landing-art-4" />
-    <script src="/static/landing.js?v=20260817-landing-art-4" defer></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260818-perf10" />
+    <script src="/static/landing.js?v=20260818-perf10" defer></script>
   </head>
   <body class="landing-body">
     <header class="landing-header">
@@ -17,11 +17,11 @@
       <nav class="landing-nav" aria-label="首页导航">
         <a href="#product" aria-current="page">产品</a>
         <a href="#workflow">流程</a>
-        <a href="/research">工作台</a>
-        <a href="/results">成果</a>
-        <a href="/settings">设置</a>
+        <a href="/app/research">工作台</a>
+        <a href="/app/results">成果</a>
+        <a href="/app/settings">设置</a>
       </nav>
-      <a class="button primary landing-start" href="/research"><span class="button-icon" aria-hidden="true">→</span> 开始调研</a>
+      <a class="button primary landing-start" href="/app/research"><span class="button-icon" aria-hidden="true">→</span> 开始调研</a>
     </header>
 
     <main>
@@ -62,9 +62,9 @@
             <span>规划</span><i>→</i><span>搜集</span><i>→</i><span>验证</span><i>→</i><span>补采</span><i>→</i><span>分析</span><i>→</i><span>报告生成</span>
           </div>
           <div class="hero-actions">
-            <a class="button primary" href="/research"><span class="button-icon" aria-hidden="true">→</span> 进入工作台</a>
+            <a class="button primary" href="/app/research"><span class="button-icon" aria-hidden="true">→</span> 进入工作台</a>
             <a class="button secondary" href="#product"><span class="button-icon" aria-hidden="true">◎</span> 查看能力</a>
-            <a class="button secondary" href="/research?new=1"><span class="button-icon" aria-hidden="true">＋</span> 新建调研</a>
+            <a class="button secondary" href="/app/research?new=1"><span class="button-icon" aria-hidden="true">＋</span> 新建调研</a>
           </div>
           <div class="hero-trust"><span>♢ 可追溯证据</span><span>·</span><span>可信来源</span><span>·</span><span>可复用成果</span><span>·</span><span>隐私安全本地化</span></div>
         </div>
@@ -103,7 +103,7 @@
           <p>从提出问题、组织材料，到跟踪智能体和交付成果，每一个环节都在同一个本地工作台里保持可见、可控、可复用。</p>
         </header>
         <div class="landing-features">
-          <a class="landing-feature" href="/research">
+          <a class="landing-feature" href="/app/research">
             <div class="feature-topline"><span class="feature-icon">⌂</span><span class="feature-number">01</span></div>
             <span class="feature-label">RESEARCH CONTROL</span><h2>研究首页</h2>
             <p class="feature-summary">从一个研究主题开始，集中掌握任务状态、审批节点与下一步动作。</p>
@@ -111,7 +111,7 @@
             <ul class="feature-points"><li>任务状态与进度总览</li><li>检查点审批与继续运行</li></ul>
             <span class="feature-enter">进入研究首页 <b>→</b></span>
           </a>
-          <a class="landing-feature" href="/workspace">
+          <a class="landing-feature" href="/app/workspace">
             <div class="feature-topline"><span class="feature-icon">□</span><span class="feature-number">02</span></div>
             <span class="feature-label">AGENT WORKSPACE</span><h2>项目工作区</h2>
             <p class="feature-summary">实时跟随 Agent 的执行轨迹，把轮次、日志、检查点和项目产物放在同一视野。</p>
@@ -119,7 +119,7 @@
             <ul class="feature-points"><li>轮次、日志与阶段时间线</li><li>并排阅读项目产物</li></ul>
             <span class="feature-enter">打开项目工作区 <b>→</b></span>
           </a>
-          <a class="landing-feature" href="/materials">
+          <a class="landing-feature" href="/app/materials">
             <div class="feature-topline"><span class="feature-icon">◇</span><span class="feature-number">03</span></div>
             <span class="feature-label">SOURCE LIBRARY</span><h2>材料中心</h2>
             <p class="feature-summary">统一接入、解析和检索研究材料，让分散的信息沉淀为可复用的资产库。</p>
@@ -127,7 +127,7 @@
             <ul class="feature-points"><li>解析、OCR 与元数据管理</li><li>检索、版本比较与归档</li></ul>
             <span class="feature-enter">管理研究材料 <b>→</b></span>
           </a>
-          <a class="landing-feature" href="/results">
+          <a class="landing-feature" href="/app/results">
             <div class="feature-topline"><span class="feature-icon">▥</span><span class="feature-number">04</span></div>
             <span class="feature-label">DELIVERY CENTER</span><h2>成果中心</h2>
             <p class="feature-summary">集中预览洞察、Markdown 草案和正式报告，把研究结果整理成可交付文件。</p>
@@ -135,7 +135,7 @@
             <ul class="feature-points"><li>Markdown 与正式报告预览</li><li>PDF、TeX 与交付文件导出</li></ul>
             <span class="feature-enter">查看研究成果 <b>→</b></span>
           </a>
-          <a class="landing-feature" href="/settings">
+          <a class="landing-feature" href="/app/settings">
             <div class="feature-topline"><span class="feature-icon">⚙</span><span class="feature-number">05</span></div>
             <span class="feature-label">LOCAL CONFIGURATION</span><h2>设置</h2>
             <p class="feature-summary">调整模型、搜索、Embedding 与本地存储配置，让工作台适配你的研发环境。</p>

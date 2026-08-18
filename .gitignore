@@ -14,3 +14,7 @@ __pycache__/
 *.py[cod]
 .data/
 projects/
+
+# 工作产物与临时文件（不纳入版本库）
+tmp/
+.frontend-slides/

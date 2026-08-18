@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>溯光 Lumitrace · 本地多智能体调研工作台</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260818-perf10" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <div id="sidebarMount"></div>
+      <main class="main-column">
+        <!-- 视图占位：router.js 拉取 /api/views/{name} 后注入这里 -->
+        <div id="viewMount" class="view-loading" aria-live="polite">
+          <div class="view-skeleton" aria-hidden="true">
+            <span class="view-skeleton-bar"></span>
+            <span class="view-skeleton-bar wide"></span>
+            <span class="view-skeleton-bar"></span>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script src="/static/ui.js?v=20260818-perf10"></script>
+    <script src="/static/home.js?v=20260818-perf10"></script>
+    <script src="/static/app.js?v=20260818-perf10"></script>
+    <script src="/static/materials.js?v=20260818-perf10"></script>
+    <script src="/static/results.js?v=20260818-perf10"></script>
+    <script src="/static/settings.js?v=20260818-perf10"></script>
+    <script src="/static/router.js?v=20260818-perf10"></script>
+  </body>
+</html>

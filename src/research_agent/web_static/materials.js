@@ -1,16 +1,19 @@
-Lumitrace.mountShell("materials");
+(() => {
+const IS_SPA = window.location.pathname.startsWith("/app");
 
 const requestedSourceId = new URLSearchParams(window.location.search).get("source");
-const state = { projectId: Lumitrace.selectedProject() || "default-project", projects: [], sources: [], selectedId: requestedSourceId };
+const state = { projectId: Lumitrace.selectedProject() || "default-project", projects: [], sources: [], selectedId: requestedSourceId, _sourcesBound: false };
 const $ = (id) => document.getElementById(id);
 const statuses = ["created", "uploading", "quarantined", "validating", "needs_password", "parsing", "ocr", "indexing", "needs_review", "ready", "active", "superseded", "failed", "archived"];
 
-$("globalSearchIcon").innerHTML = Lumitrace.icon("search", 17);
-$("uploadIcon").innerHTML = Lumitrace.icon("upload", 17);
-$("refresh").innerHTML = Lumitrace.icon("refresh", 17);
-$("closeInspector").innerHTML = Lumitrace.icon("close", 16);
-$("closeEdit").innerHTML = Lumitrace.icon("close", 16);
-$("statusFilter").innerHTML += statuses.map((status) => `<option value="${status}">${Lumitrace.sourceStatus(status)}</option>`).join("");
+function decorateIcons() {
+  $("globalSearchIcon").innerHTML = Lumitrace.icon("search", 17);
+  $("uploadIcon").innerHTML = Lumitrace.icon("upload", 17);
+  $("refresh").innerHTML = Lumitrace.icon("refresh", 17);
+  $("closeInspector").innerHTML = Lumitrace.icon("close", 16);
+  $("closeEdit").innerHTML = Lumitrace.icon("close", 16);
+  $("statusFilter").innerHTML = '<option value="">全部状态</option>' + statuses.map((status) => `<option value="${status}">${Lumitrace.sourceStatus(status)}</option>`).join("");
+}
 
 function setMessage(text, tone = "") {
   $("message").innerHTML = text ? `<span class="status-pill ${tone}">${tone === "running" ? '<span class="spinner"></span>' : `<i class="status-dot ${tone || "neutral"}"></i>`}${Lumitrace.escapeHtml(text)}</span>` : "";
@@ -42,7 +45,16 @@ function renderSources() {
     const versions = state.sources.filter((item) => item.logical_source_id === source.logical_source_id).length;
     return `<tr data-source="${source.source_id}"><td><button class="source-name row-link" type="button" data-action="preview"><span class="file-icon">${Lumitrace.icon("file", 17)}</span><span class="table-title"><strong>${Lumitrace.escapeHtml(source.title || source.original_filename)}</strong><small>${Lumitrace.escapeHtml(source.original_filename)}</small></span></button></td><td><span class="status-pill ${tone}"><i class="status-dot ${tone}"></i>${Lumitrace.sourceStatus(source.status)}</span></td><td>v${source.version}.0</td><td><span class="tier">${Lumitrace.escapeHtml(source.source_tier)}</span></td><td>${Lumitrace.formatDate(source.updated_at || source.created_at)}</td><td><div class="row-actions"><button class="icon-button" type="button" data-action="preview" title="预览">${Lumitrace.icon("search", 15)}</button><button class="icon-button" type="button" data-action="edit" title="编辑">✎</button>${["ready", "needs_review"].includes(source.status) ? `<button class="icon-button" type="button" data-action="activate" title="激活">${Lumitrace.icon("check", 15)}</button>` : ""}<button class="icon-button" type="button" data-action="more" title="更多操作">${Lumitrace.icon("more", 16)}</button></div><div class="hidden" data-version-count="${versions}"></div></td></tr>`;
   }).join("");
-  $("sources").querySelectorAll("tr[data-source]").forEach((row) => row.addEventListener("click", (event) => handleRowAction(row.dataset.source, event.target.closest("[data-action]")?.dataset.action)));
+  // 事件委托：容器上绑一次
+  if (!state._sourcesBound) {
+    state._sourcesBound = true;
+    $("sources").addEventListener("click", (event) => {
+      const row = event.target.closest("tr[data-source]");
+      if (!row) return;
+      const action = event.target.closest("[data-action]")?.dataset.action;
+      handleRowAction(row.dataset.source, action);
+    });
+  }
   $("empty").querySelector("[data-choose-files]")?.addEventListener("click", () => $("files").click());
 }
 
@@ -109,8 +121,20 @@ async function preview(id) {
     const document = data.document;
     $("inspectorTitle").textContent = source.title || source.original_filename;
     const warnings = document?.warnings?.length ? `<div class="warning-box">${document.warnings.map((item) => `${Lumitrace.escapeHtml(item.code)}：${Lumitrace.escapeHtml(item.message)}`).join("<br>")}</div>` : "";
-    const text = document ? document.blocks.slice(0, 16).map((block) => block.text).join("\n\n") : "等待解析";
-    $("inspectorBody").innerHTML = `<div class="inline" style="margin-bottom:16px"><span class="file-icon">${Lumitrace.icon("file", 18)}</span><span class="table-title"><strong>${Lumitrace.escapeHtml(source.original_filename)}</strong><small>v${source.version}.0 · ${Lumitrace.sourceStatus(source.status)}</small></span></div>${warnings}<h3 style="margin:20px 0 10px">正文预览</h3><pre class="inspector-preview">${Lumitrace.escapeHtml(text)}</pre><h3 style="margin:20px 0 12px">元数据</h3><div class="detail-list"><div class="detail-row"><span>来源等级</span><strong>${Lumitrace.escapeHtml(source.source_tier)}</strong></div><div class="detail-row"><span>材料状态</span><strong>${Lumitrace.sourceStatus(source.status)}</strong></div><div class="detail-row"><span>版本</span><strong>v${source.version}.0</strong></div></div><div class="inspector-actions"><button class="button secondary" data-detail-action="edit">编辑信息</button>${["ready", "needs_review"].includes(source.status) ? '<button class="button secondary" data-detail-action="activate">激活</button>' : ""}${!["archived", "superseded"].includes(source.status) ? '<button class="button secondary" data-detail-action="reprocess">重新处理</button>' : ""}${source.status !== "archived" ? '<button class="button danger" data-detail-action="archive">归档</button>' : ""}${state.sources.filter((item) => item.logical_source_id === source.logical_source_id).length > 1 ? '<button class="button secondary" data-detail-action="compare">版本比较</button>' : ""}</div>`;
+    // 正文预览：取前若干个 block 的文本。过滤掉过短的碎片块（如单个词/数字），
+    // 优先展示成段落的语义内容，避免"只有词汇"的可读性差问题。
+    const blocks = document?.blocks || [];
+    const meaningful = blocks
+      .filter((b) => b.text && b.text.trim().length >= 8)
+      .slice(0, 16);
+    const text = meaningful.length
+      ? meaningful.map((b) => b.text.trim()).join("\n\n")
+      : (blocks.length ? blocks.slice(0, 16).map((b) => b.text).join("\n\n") : "");
+    // 源文件链接：优先用 origin_url（网页原始出处），否则不给链接
+    const originLink = source.origin_url
+      ? `<a class="button secondary small" href="${Lumitrace.escapeHtml(source.origin_url)}" target="_blank" rel="noopener noreferrer">${Lumitrace.icon("arrow", 14)} 打开源文件</a>`
+      : "";
+    $("inspectorBody").innerHTML = `<div class="source-detail-head"><div class="inline" style="min-width:0"><span class="file-icon">${Lumitrace.icon("file", 18)}</span><span class="table-title" style="min-width:0"><strong>${Lumitrace.escapeHtml(source.original_filename)}</strong><small>v${source.version}.0 · ${Lumitrace.sourceStatus(source.status)}</small></span></div>${originLink ? `<div class="source-detail-actions">${originLink}</div>` : ""}</div>${warnings}<h3 style="margin:20px 0 10px">正文预览</h3>${text ? `<pre class="inspector-preview">${Lumitrace.escapeHtml(text)}</pre>` : '<p class="muted">该材料尚未解析出正文，可尝试重新处理。</p>'}<h3 style="margin:20px 0 12px">元数据</h3><div class="detail-list"><div class="detail-row"><span>来源等级</span><strong>${Lumitrace.escapeHtml(source.source_tier)}</strong></div><div class="detail-row"><span>材料状态</span><strong>${Lumitrace.sourceStatus(source.status)}</strong></div><div class="detail-row"><span>版本</span><strong>v${source.version}.0</strong></div>${source.origin_url ? `<div class="detail-row"><span>原始出处</span><strong><a href="${Lumitrace.escapeHtml(source.origin_url)}" target="_blank" rel="noopener noreferrer" style="color:#6274e9;word-break:break-all">${Lumitrace.escapeHtml(source.origin_url)}</a></strong></div>` : ""}</div><div class="inspector-actions"><button class="button secondary" data-detail-action="edit">编辑信息</button>${["ready", "needs_review"].includes(source.status) ? '<button class="button secondary" data-detail-action="activate">激活</button>' : ""}${!["archived", "superseded"].includes(source.status) ? '<button class="button secondary" data-detail-action="reprocess">重新处理</button>' : ""}${source.status !== "archived" ? '<button class="button danger" data-detail-action="archive">归档</button>' : ""}${state.sources.filter((item) => item.logical_source_id === source.logical_source_id).length > 1 ? '<button class="button secondary" data-detail-action="compare">版本比较</button>' : ""}</div>`;
     $("inspectorBody").querySelectorAll("[data-detail-action]").forEach((button) => button.addEventListener("click", () => handleRowAction(id, button.dataset.detailAction)));
   } catch (error) {
     $("inspectorBody").innerHTML = `<div class="empty compact"><span class="empty-symbol">!</span><strong>预览失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p></div>`;
@@ -195,17 +219,45 @@ function clearInspector() {
   $("inspectorBody").innerHTML = '<div class="empty compact"><span class="empty-symbol">◇</span><strong>选择一份材料</strong><p>查看正文、解析警告和元数据。</p></div>';
 }
 
-$("chooseFiles").addEventListener("click", () => $("files").click());
-$("files").addEventListener("change", upload);
-$("refresh").addEventListener("click", refresh);
-$("search").addEventListener("click", search);
-$("query").addEventListener("keydown", (event) => { if (event.key === "Enter") search(); });
-$("statusFilter").addEventListener("change", renderSources);
-$("tierFilter").addEventListener("change", renderSources);
-$("projectSelect").addEventListener("change", () => { state.projectId = $("projectSelect").value; Lumitrace.rememberProject(state.projectId); state.selectedId = null; clearInspector(); refresh(); });
-$("closeInspector").addEventListener("click", clearInspector);
-$("editForm").addEventListener("submit", saveEdit);
-$("closeEdit").addEventListener("click", closeEdit);
-$("cancelEdit").addEventListener("click", closeEdit);
+function bindEvents() {
+  $("chooseFiles").addEventListener("click", () => $("files").click());
+  $("files").addEventListener("change", upload);
+  $("refresh").addEventListener("click", refresh);
+  $("search").addEventListener("click", search);
+  $("query").addEventListener("keydown", (event) => { if (event.key === "Enter") search(); });
+  $("statusFilter").addEventListener("change", renderSources);
+  $("tierFilter").addEventListener("change", renderSources);
+  $("projectSelect").addEventListener("change", () => { state.projectId = $("projectSelect").value; Lumitrace.rememberProject(state.projectId); state.selectedId = null; clearInspector(); refresh(); });
+  $("closeInspector").addEventListener("click", clearInspector);
+  $("editForm").addEventListener("submit", saveEdit);
+  $("closeEdit").addEventListener("click", closeEdit);
+  $("cancelEdit").addEventListener("click", closeEdit);
+}
 
-loadProjects().then(refresh);
+function init() {
+  // SPA 下 URL 的 ?project= / ?source= 会在导航时变化，进入视图时重新读取
+  const fromUrl = new URLSearchParams(window.location.search).get("project");
+  if (fromUrl) state.projectId = fromUrl;
+  const fromSource = new URLSearchParams(window.location.search).get("source");
+  if (fromSource) state.selectedId = fromSource;
+  decorateIcons();
+  bindEvents();
+  loadProjects().then(refresh);
+}
+
+function destroy() {
+  state.sources = [];
+  state.projects = [];
+  state.selectedId = null;
+  state._sourcesBound = false;
+}
+
+// SPA：注册视图供 router 调用；旧 /materials 页面直接初始化。
+if (window.Lumitrace?.views?.register) {
+  Lumitrace.views.register("materials", { init, destroy });
+}
+if (!IS_SPA) {
+  Lumitrace.mountShell("materials");
+  init();
+}
+})();

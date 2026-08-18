@@ -323,7 +323,7 @@ def test_results_sidebar_items_fill_the_available_width() -> None:
     template = (web_app.STATIC_DIR / "results.html").read_text(encoding="utf-8")
 
     assert ".result-item { display: grid; width: 100%;" in styles
-    assert "styles.css?v=20260817-results-list" in template
+    assert f"styles.css?v={web_app.STATIC_VERSION}" in template
 
 
 @pytest.mark.anyio

@@ -1,12 +1,15 @@
-Lumitrace.mountShell("home");
+(() => {
+const IS_SPA = window.location.pathname.startsWith("/app");
 
-const state = { projects: [], filter: "all", query: "", defaultRounds: 3, usage: null, usageRange: "daily" };
+const state = { projects: [], filter: "all", query: "", defaultRounds: 3, usage: null, usageRange: "daily", _tableBound: false };
 const $ = (id) => document.getElementById(id);
 
-$("topSearchIcon").innerHTML = Lumitrace.icon("search", 17);
-$("newIcon").innerHTML = Lumitrace.icon("plus", 17);
-$("refreshProjects").innerHTML = Lumitrace.icon("refresh", 17);
-$("closeCreate").innerHTML = Lumitrace.icon("close", 17);
+function decorateIcons() {
+  $("topSearchIcon").innerHTML = Lumitrace.icon("search", 17);
+  $("newIcon").innerHTML = Lumitrace.icon("plus", 17);
+  $("refreshProjects").innerHTML = Lumitrace.icon("refresh", 17);
+  $("closeCreate").innerHTML = Lumitrace.icon("close", 17);
+}
 
 function renderRoundPicker() {
   $("roundInput").value = state.defaultRounds;
@@ -205,10 +208,18 @@ function renderProjects() {
     const failureHint = failed && project.last_error
       ? `<small class="row-error" title="${Lumitrace.escapeHtml(project.last_error)}">${Lumitrace.escapeHtml(project.last_error.slice(0, 60))}${project.last_error.length > 60 ? "…" : ""}</small>`
       : "";
-    return `<tr><td><a class="table-title row-link" href="/workspace?project=${encodeURIComponent(project.id)}"><strong>${Lumitrace.escapeHtml(project.topic)}</strong><small>${id}</small></a></td><td>${Lumitrace.stageLabel(project.stage)}</td><td>${project.collect_round} / ${project.max_collect_rounds}</td><td>${Lumitrace.formatDate(project.updated_at)}</td><td><span class="status-pill ${tone}"><i class="status-dot ${tone}"></i>${status}</span>${failureHint}</td><td>${project.stage === "await_clarification" ? '<span class="status-pill warning">需求澄清待回答</span>' : project.checkpoint ? `<span class="status-pill warning">1 项待审批</span>` : '<span class="muted">—</span>'}</td><td><div class="row-actions">${retryButton}<button class="icon-button danger" type="button" data-delete="${id}" title="删除项目"${project.running ? " disabled" : ""}>${Lumitrace.icon("trash", 16)}</button><a class="icon-button" href="/workspace?project=${encodeURIComponent(project.id)}" title="打开项目">${Lumitrace.icon("arrow", 16)}</a></div></td></tr>`;
+    return `<tr><td><a class="table-title row-link" href="/app/workspace?project=${encodeURIComponent(project.id)}"><strong>${Lumitrace.escapeHtml(project.topic)}</strong><small>${id}</small></a></td><td>${Lumitrace.stageLabel(project.stage)}</td><td>${project.collect_round} / ${project.max_collect_rounds}</td><td>${Lumitrace.formatDate(project.updated_at)}</td><td><span class="status-pill ${tone}"><i class="status-dot ${tone}"></i>${status}</span>${failureHint}</td><td>${project.stage === "await_clarification" ? '<span class="status-pill warning">需求澄清待回答</span>' : project.checkpoint ? `<span class="status-pill warning">1 项待审批</span>` : '<span class="muted">—</span>'}</td><td><div class="row-actions">${retryButton}<button class="icon-button danger" type="button" data-delete="${id}" title="删除项目"${project.running ? " disabled" : ""}>${Lumitrace.icon("trash", 16)}</button><a class="icon-button" href="/app/workspace?project=${encodeURIComponent(project.id)}" title="打开项目">${Lumitrace.icon("arrow", 16)}</a></div></td></tr>`;
   }).join("")}</tbody></table>`;
-  $("projectTable").querySelectorAll("[data-retry]").forEach((button) => button.addEventListener("click", () => retryProject(button.dataset.retry, button)));
-  $("projectTable").querySelectorAll("[data-delete]").forEach((button) => button.addEventListener("click", () => deleteProject(button.dataset.delete, button)));
+  // 事件委托：容器上绑一次，行重绘后无需逐个绑定
+  if (!state._tableBound) {
+    state._tableBound = true;
+    $("projectTable").addEventListener("click", (event) => {
+      const retry = event.target.closest("[data-retry]");
+      const del = event.target.closest("[data-delete]");
+      if (retry) retryProject(retry.dataset.retry, retry);
+      else if (del) deleteProject(del.dataset.delete, del);
+    });
+  }
 }
 
 async function retryProject(projectId, button) {
@@ -267,43 +278,68 @@ async function createProject(event) {
   try {
     const project = await Lumitrace.api("/api/projects", { method: "POST", body: JSON.stringify({ topic: $("topicInput").value, brief: $("briefInput").value, max_collect_rounds: Number($("roundInput").value) }) });
     Lumitrace.rememberProject(project.id);
-    window.location.href = `/workspace?project=${encodeURIComponent(project.id)}`;
+    const target = `/app/workspace?project=${encodeURIComponent(project.id)}`;
+    if (window.Lumitrace?.navigate) Lumitrace.navigate(target);
+    else window.location.href = target;
   } catch (error) {
     Lumitrace.toast(error.message, "danger");
     Lumitrace.setButtonBusy(button, false);
   }
 }
 
-$("openCreate").addEventListener("click", openDrawer);
-$("closeCreate").addEventListener("click", closeDrawer);
-$("cancelCreate").addEventListener("click", closeDrawer);
-$("createDrawer").addEventListener("click", (event) => { if (event.target === $("createDrawer")) closeDrawer(); });
-$("createForm").addEventListener("submit", createProject);
-$("refreshProjects").addEventListener("click", () => { loadProjects(); loadUsage(); });
-$("projectSearch").addEventListener("input", (event) => { state.query = event.target.value; renderProjects(); });
-$("filterTabs").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-filter]");
-  if (!button) return;
-  state.filter = button.dataset.filter;
-  $("filterTabs").querySelectorAll(".filter-tab").forEach((item) => item.classList.toggle("active", item === button));
-  renderProjects();
-});
-$("roundPicker").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-round]");
-  if (!button) return;
-  $("roundInput").value = button.dataset.round;
-  $("roundPicker").querySelectorAll(".round-option").forEach((item) => item.classList.toggle("active", item === button));
-});
+function bindEvents() {
+  $("openCreate").addEventListener("click", openDrawer);
+  $("closeCreate").addEventListener("click", closeDrawer);
+  $("cancelCreate").addEventListener("click", closeDrawer);
+  $("createDrawer").addEventListener("click", (event) => { if (event.target === $("createDrawer")) closeDrawer(); });
+  $("createForm").addEventListener("submit", createProject);
+  $("refreshProjects").addEventListener("click", () => { loadProjects(); loadUsage(); });
+  $("projectSearch").addEventListener("input", Lumitrace.debounce((event) => { state.query = event.target.value; renderProjects(); }, 160));
+  $("filterTabs").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-filter]");
+    if (!button) return;
+    state.filter = button.dataset.filter;
+    $("filterTabs").querySelectorAll(".filter-tab").forEach((item) => item.classList.toggle("active", item === button));
+    renderProjects();
+  });
+  $("roundPicker").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-round]");
+    if (!button) return;
+    $("roundInput").value = button.dataset.round;
+    $("roundPicker").querySelectorAll(".round-option").forEach((item) => item.classList.toggle("active", item === button));
+  });
+  $("usageRangeTabs").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-range]");
+    if (!button) return;
+    state.usageRange = button.dataset.range;
+    $("usageRangeTabs").querySelectorAll(".filter-tab").forEach((item) => item.classList.toggle("active", item === button));
+    renderUsage();
+  });
+}
 
-$("usageRangeTabs").addEventListener("click", (event) => {
-  const button = event.target.closest("[data-range]");
-  if (!button) return;
-  state.usageRange = button.dataset.range;
-  $("usageRangeTabs").querySelectorAll(".filter-tab").forEach((item) => item.classList.toggle("active", item === button));
-  renderUsage();
-});
+function init() {
+  decorateIcons();
+  bindEvents();
+  if (new URLSearchParams(window.location.search).get("new") === "1") openDrawer();
+  loadDefaults();
+  loadProjects();
+  loadUsage();
+}
 
-if (new URLSearchParams(window.location.search).get("new") === "1") openDrawer();
-loadDefaults();
-loadProjects();
-loadUsage();
+function destroy() {
+  state.projects = [];
+  state.usage = null;
+  state._tableBound = false;
+  state.filter = "all";
+  state.query = "";
+}
+
+// SPA：注册视图供 router 调用；旧 /research 页面直接初始化。
+if (window.Lumitrace?.views?.register) {
+  Lumitrace.views.register("research", { init, destroy });
+}
+if (!IS_SPA) {
+  Lumitrace.mountShell("home");
+  init();
+}
+})();

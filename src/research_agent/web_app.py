@@ -59,6 +59,23 @@ ARTIFACT_LIMIT = 120_000
 HTML_HEADERS = {"Cache-Control": "no-store"}
 ENV_PATH = config.PROJECT_ROOT / ".env"
 
+# 静态资源版本号：所有 HTML 里的 ?v= 应引用同一个常量，保证 CSS/JS 只缓存一份。
+# 修改任意 web_static 资源后 bump 此值即可让浏览器刷新缓存。
+STATIC_VERSION = "20260818-perf10"
+
+# 静态资源长缓存：资源 URL 携带 STATIC_VERSION，改内容即改版本号，
+# 因此可安全缓存较长时间，避免每次 304 revalidate。
+STATIC_CACHE_HEADERS = {"Cache-Control": f"public, max-age=31536000, immutable"}
+
+
+class _CachedStaticFiles(StaticFiles):
+    """给 /static 资源附加长缓存头（HTML 保持 no-store，由版本号控制失效）。"""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers.update(STATIC_CACHE_HEADERS)
+        return response
+
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -120,7 +137,7 @@ async def _require_token(request: Request, call_next):
 _source_service, _source_queue = build_runtime(config.SOURCE_DATA_DIR)
 app.include_router(create_sources_router(_source_service, _source_queue, process_in_background=True))
 if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/static", _CachedStaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/materials", include_in_schema=False)
@@ -146,6 +163,82 @@ async def results_center() -> FileResponse:
 @app.get("/settings", include_in_schema=False)
 async def settings_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "settings.html", headers=HTML_HEADERS)
+
+
+# ── SPA 视图片段 ────────────────────────────────────────────────
+# SPA 壳（app.html）通过 /api/views/{name} 拉取各页面的主内容区 HTML 片段，
+# 复用现有 5 个 HTML 文件的单一事实来源，避免内容双重维护。
+_VIEW_FILES: dict[str, str] = {
+    "research": "research.html",
+    "workspace": "workspace.html",
+    "materials": "materials.html",
+    "results": "results.html",
+    "settings": "settings.html",
+}
+_VIEW_TITLES: dict[str, str] = {
+    "research": "研究首页",
+    "workspace": "项目工作区",
+    "materials": "材料中心",
+    "results": "成果中心",
+    "settings": "设置",
+}
+
+
+def _view_fragment(name: str) -> dict[str, str]:
+    """从既有 HTML 文件切出主内容区片段（含 <main> 内的顶栏与内容区，不含脚本）。
+
+    切法：定位 `<main class="main-column">` 到配对的 `</main>`，去掉其中的
+    <script> 块（脚本由 SPA 壳统一加载）。找不到对应文件或标记时抛 404。
+    """
+    if name not in _VIEW_FILES:
+        raise HTTPException(status_code=404, detail=f"Unknown view: {name}")
+    path = STATIC_DIR / _VIEW_FILES[name]
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"View not found: {name}")
+    text = path.read_text(encoding="utf-8")
+
+    start = text.find('<main class="main-column">')
+    if start == -1:
+        raise HTTPException(status_code=404, detail=f"View has no main: {name}")
+    end = text.find("</main>", start)
+    if end == -1:
+        raise HTTPException(status_code=404, detail=f"View main not closed: {name}")
+
+    # 片段 = <main> 标签内部的内容（不含 <main>/</main> 标签本身：SPA 壳已有
+    # 一个 <main class="main-column"> 作为 #viewMount 的父容器，重复包含会形成
+    # 嵌套 main 并干扰视图过渡），再加上 </main> 之后、第一个 <script> 之前的
+    # 兄弟元素（抽屉/弹层等，视图 JS 的 bindEvents 依赖它们）。
+    inner_start = start + len('<main class="main-column">')
+    script_start = text.find("<script", end)
+    if script_start == -1:
+        script_start = len(text)
+    fragment = text[inner_start:end] + text[end + len("</main>"):script_start]
+
+    # 去掉 <script> 块：脚本统一由 SPA 壳加载，片段内不应再执行一次
+    fragment = re.sub(r"<script\b[^>]*>.*?</script>", "", fragment, flags=re.DOTALL)
+
+    return {
+        "name": name,
+        "title": _VIEW_TITLES.get(name, name),
+        "html": fragment,
+    }
+
+
+@app.get("/api/views/{name}", include_in_schema=False)
+async def api_view_fragment(name: str, response: Response) -> dict[str, str]:
+    response.headers.update(HTML_HEADERS)
+    return _view_fragment(name)
+
+
+@app.get("/app", include_in_schema=False)
+async def spa_shell() -> FileResponse:
+    return FileResponse(STATIC_DIR / "app.html", headers=HTML_HEADERS)
+
+
+@app.get("/app/{path:path}", include_in_schema=False)
+async def spa_shell_path(path: str) -> FileResponse:
+    """SPA 前端路由：/app/ 下的任意路径都回退到同一壳，由前端 router 解析。"""
+    return FileResponse(STATIC_DIR / "app.html", headers=HTML_HEADERS)
 
 JOBS: dict[str, dict[str, Any]] = {}
 LOCKS: dict[str, asyncio.Lock] = {}
@@ -338,7 +431,9 @@ def _notify_subscribers(project_id: str) -> None:
     """通知该项目的全部 SSE 连接有状态更新。
 
     每个连接的队列容量为 1：若消费者还没消费上一次更新，用最新的替换掉，
-    避免运行中的项目日志洪泛导致队列堆积。
+    避免运行中的项目日志洪泛导致队列堆积。真正的时间合并（coalescing）在
+    `event_stream` 消费端完成：拿到第一个事件后进入短暂 drain 窗口，窗口内
+    的后续事件合并为一次推送，避免前端每秒被刷数十次。
     """
     queues = SUBSCRIBERS.get(project_id)
     if not queues:
@@ -424,6 +519,21 @@ def _read_artifact(path: Path | None) -> str:
     if len(text) > ARTIFACT_LIMIT:
         return text[:ARTIFACT_LIMIT] + "\n\n[... truncated]"
     return text
+
+
+def _artifact_version(path: Path | None) -> str | None:
+    """给产物一个稳定版本号（mtime + size），供前端跳过未变化的重复请求。
+
+    用 mtime + size 而非全文 hash：大报告全文 hash 的 IO 成本不比直接读一遍
+    低多少，mtime/size 足以表达"文件是否被重写"。缺失或不可读时返回 None。
+    """
+    if not path or not path.exists() or not path.is_file():
+        return None
+    try:
+        stat = path.stat()
+        return f"{stat.st_mtime_ns}-{stat.st_size}"
+    except OSError:
+        return None
 
 
 async def _final_report_pdf_path(state: ProjectState) -> Path:
@@ -520,6 +630,7 @@ def _serialize_state(state: ProjectState) -> dict[str, Any]:
                 "label": label,
                 "exists": bool(path and path.exists()),
                 "name": path.name if path else "",
+                "version": _artifact_version(path),
             }
         )
 
@@ -985,12 +1096,17 @@ async def api_project_events(project_id: str, request: Request) -> StreamingResp
     """SSE 事件流：项目状态或日志变化时推送，替代前端 3 秒全量轮询。
 
     每个连接维护一个容量为 1 的队列；连接断开（客户端关闭、任务取消）时
-    自动从订阅集合移除。
+    自动从订阅集合移除。消费端做合并：拿到首个事件后进入一段 drain 窗口，
+    窗口内连续到达的事件合并为一次 `update` 推送，降低高频日志下的推送次数。
     """
     _load_state(project_id)  # 校验项目存在，早失败返回 404
 
     queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
     SUBSCRIBERS.setdefault(project_id, set()).add(queue)
+
+    # 合并窗口：两次推送之间的最小间隔（秒）。运行中的日志可能毫秒级到达，
+    # 这里把窗口内的事件 coalesce 成一次推送，前端每 ~150ms 最多刷新一次。
+    COALESCE_WINDOW = 0.15
 
     async def event_stream() -> AsyncIterator[str]:
         try:
@@ -1001,10 +1117,17 @@ async def api_project_events(project_id: str, request: Request) -> StreamingResp
                     break
                 try:
                     await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield "event: update\ndata: {}\n\n"
                 except asyncio.TimeoutError:
                     # 心跳，保持连接不被中间代理关闭
                     yield ": keep-alive\n\n"
+                    continue
+                # 合并窗口：尽可能清空这 150ms 内堆积的事件，合并为一次推送
+                try:
+                    while True:
+                        await asyncio.wait_for(queue.get(), timeout=COALESCE_WINDOW)
+                except asyncio.TimeoutError:
+                    pass
+                yield "event: update\ndata: {}\n\n"
         finally:
             SUBSCRIBERS.get(project_id, set()).discard(queue)
 
@@ -1190,6 +1313,7 @@ async def api_artifact(
                 "exists": bool(path and path.exists()),
                 "content": _read_artifact(path),
                 "name": path.name if path else "",
+                "version": _artifact_version(path),
             }
             if key == "final_report":
                 html_path = (

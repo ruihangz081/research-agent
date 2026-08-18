@@ -1,4 +1,5 @@
-Lumitrace.mountShell("settings");
+(() => {
+const IS_SPA = window.location.pathname.startsWith("/app");
 
 const $ = (id) => document.getElementById(id);
 let config = null;
@@ -170,16 +171,31 @@ async function testSearch() {
   }
 }
 
-$("saveModel").addEventListener("click", saveModelConfig);
-$("testConnection").addEventListener("click", testConnection);
-$("saveWorkspace").addEventListener("click", saveWorkspaceConfig);
-$("saveSearch").addEventListener("click", saveSearchConfig);
-$("testSearch").addEventListener("click", testSearch);
-$("searchProvider").addEventListener("change", renderSearchKeyState);
-$("copyEnv").addEventListener("click", async () => {
-  const template = `LLM_BASE_URL=${config?.base_url || "https://api.openai.com/v1"}\nLLM_API_KEY=\nLLM_MODEL=${config?.model || "gpt-4o"}\nLLM_TIMEOUT=${config?.timeout || 120}\nLLM_MAX_RETRIES=${config?.max_retries || 3}\nLLM_TEMPERATURE=${config?.temperature ?? 0.7}\nSEARCH_API_PROVIDER=${config?.search_provider || "anysearch"}\nSEARCH_API_KEY=\nSOURCE_EMBEDDING_BASE_URL=\nSOURCE_EMBEDDING_API_KEY=\nSOURCE_EMBEDDING_MODEL=\nMAX_COLLECT_ROUNDS=${config?.default_rounds || 3}\nOUTPUT_PREFERENCE=${config?.output_preference || "balanced"}\nPROJECTS_DIR=${config?.projects_dir || ""}\nSOURCE_DATA_DIR=${config?.source_data_dir || ""}`;
-  try { await navigator.clipboard.writeText(template); Lumitrace.toast("配置模板已复制"); }
-  catch (_) { Lumitrace.toast("浏览器不允许复制，请直接编辑项目中的 .env", "warning"); }
-});
+function init() {
+  $("saveModel").addEventListener("click", saveModelConfig);
+  $("testConnection").addEventListener("click", testConnection);
+  $("saveWorkspace").addEventListener("click", saveWorkspaceConfig);
+  $("saveSearch").addEventListener("click", saveSearchConfig);
+  $("testSearch").addEventListener("click", testSearch);
+  $("searchProvider").addEventListener("change", renderSearchKeyState);
+  $("copyEnv").addEventListener("click", async () => {
+    const template = `LLM_BASE_URL=${config?.base_url || "https://api.openai.com/v1"}\nLLM_API_KEY=\nLLM_MODEL=${config?.model || "gpt-4o"}\nLLM_TIMEOUT=${config?.timeout || 120}\nLLM_MAX_RETRIES=${config?.max_retries || 3}\nLLM_TEMPERATURE=${config?.temperature ?? 0.7}\nSEARCH_API_PROVIDER=${config?.search_provider || "anysearch"}\nSEARCH_API_KEY=\nSOURCE_EMBEDDING_BASE_URL=\nSOURCE_EMBEDDING_API_KEY=\nSOURCE_EMBEDDING_MODEL=\nMAX_COLLECT_ROUNDS=${config?.default_rounds || 3}\nOUTPUT_PREFERENCE=${config?.output_preference || "balanced"}\nPROJECTS_DIR=${config?.projects_dir || ""}\nSOURCE_DATA_DIR=${config?.source_data_dir || ""}`;
+    try { await navigator.clipboard.writeText(template); Lumitrace.toast("配置模板已复制"); }
+    catch (_) { Lumitrace.toast("浏览器不允许复制，请直接编辑项目中的 .env", "warning"); }
+  });
+  loadConfig();
+}
 
-loadConfig();
+function destroy() {
+  config = null;
+}
+
+// SPA：注册视图供 router 调用；旧 /settings 页面直接初始化。
+if (window.Lumitrace?.views?.register) {
+  Lumitrace.views.register("settings", { init, destroy });
+}
+if (!IS_SPA) {
+  Lumitrace.mountShell("settings");
+  init();
+}
+})();

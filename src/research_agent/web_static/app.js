@@ -1,6 +1,7 @@
-Lumitrace.mountShell("workspace");
+(() => {
+const IS_SPA = window.location.pathname.startsWith("/app");
 
-const state = { projects: [], projectId: Lumitrace.selectedProject(), project: null, artifactKey: null, renderedArtifactKey: null, renderedArtifactMarkup: null, events: null, busy: false };
+const state = { projects: [], projectId: Lumitrace.selectedProject(), project: null, artifactKey: null, renderedArtifactKey: null, renderedArtifactMarkup: null, renderedArtifactVersion: null, events: null, busy: false, _artifactTabsBound: false };
 const $ = (id) => document.getElementById(id);
 const pipelineStages = [
   ["初始化", ["init"]],
@@ -160,11 +161,17 @@ function renderArtifacts(project) {
     state.artifactKey = project.checkpoint?.key || artifacts.find((item) => item.exists)?.key || artifacts[0]?.key || null;
   }
   $("artifactTabs").innerHTML = artifacts.map((artifact) => `<button class="artifact-tab${artifact.key === state.artifactKey ? " active" : ""}${artifact.exists ? "" : " missing"}" type="button" data-artifact="${artifact.key}">${Lumitrace.icon("file", 15)}<span>${Lumitrace.escapeHtml(artifact.label)}</span></button>`).join("");
-  $("artifactTabs").querySelectorAll("[data-artifact]").forEach((button) => button.addEventListener("click", () => {
-    state.artifactKey = button.dataset.artifact;
-    renderArtifacts(project);
-    loadArtifact(true);
-  }));
+  // 事件委托：只在容器上绑一次，tab 重绘后无需逐个绑定
+  if (!state._artifactTabsBound) {
+    state._artifactTabsBound = true;
+    $("artifactTabs").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-artifact]");
+      if (!button) return;
+      state.artifactKey = button.dataset.artifact;
+      renderArtifacts(state.project);
+      loadArtifact(true);
+    });
+  }
 }
 
 function updateDownloads(project) {
@@ -182,6 +189,7 @@ async function loadArtifact(forceTop = false) {
     view.innerHTML = '<div class="empty"><span class="empty-symbol">◇</span><strong>暂无产物</strong></div>';
     state.renderedArtifactKey = null;
     state.renderedArtifactMarkup = null;
+    state.renderedArtifactVersion = null;
     return;
   }
   const selected = state.project?.artifacts.find((item) => item.key === state.artifactKey);
@@ -189,18 +197,33 @@ async function loadArtifact(forceTop = false) {
     view.innerHTML = '<div class="empty"><span class="empty-symbol">◇</span><strong>等待生成</strong><p>该产物将在对应研究阶段完成后出现。</p></div>';
     state.renderedArtifactKey = state.artifactKey;
     state.renderedArtifactMarkup = null;
+    state.renderedArtifactVersion = null;
     if (forceTop || artifactChanged) view.scrollTop = 0;
     return;
   }
+  // 去重：同一产物且后端返回的 version 未变化，跳过重复请求与重渲染。
+  // 这消除了 SSE 高频刷新时对大报告（99KB+）的反复拉取。
+  if (!forceTop && !artifactChanged && selected.version && state.renderedArtifactVersion === selected.version) {
+    return;
+  }
   try {
+    // 首次加载或切换产物时显示骨架屏，避免内容闪烁
+    if (artifactChanged) view.innerHTML = `<div class="artifact-skeleton" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>`;
     const artifact = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/artifacts/${encodeURIComponent(artifactKey)}`);
     if (state.artifactKey !== artifactKey) return;
-    const markup = artifact.html || Lumitrace.renderMarkdown(artifact.content);
+    // JSON 产物走结构化渲染（同步，体积小）；Markdown 大报告走异步渲染避免阻塞
+    const isJsonArtifact = ["research_requirements", "research_tasks", "chart_manifest"].includes(artifactKey)
+      || artifactKey.startsWith("feedback_round_")
+      || artifactKey.startsWith("task_results_round_");
+    const markup = artifact.html || (isJsonArtifact
+      ? Lumitrace.renderArtifact(artifactKey, artifact.content)
+      : await Lumitrace.renderMarkdownAsync(artifact.content));
     if (state.renderedArtifactKey !== artifactKey || state.renderedArtifactMarkup !== markup) {
       view.innerHTML = markup;
       Lumitrace.hydrateSourceCitations(view, state.projectId);
       state.renderedArtifactKey = artifactKey;
       state.renderedArtifactMarkup = markup;
+      state.renderedArtifactVersion = artifact.version ?? null;
     }
     if (forceTop || artifactChanged) view.scrollTop = 0;
   } catch (error) {
@@ -247,7 +270,7 @@ async function loadProject() {
     renderProject(project);
     await loadArtifact();
   } catch (error) {
-    $("workspaceEmpty").innerHTML = `<span class="empty-symbol">!</span><strong>项目加载失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p><a class="button secondary" href="/research">返回研究首页</a>`;
+    $("workspaceEmpty").innerHTML = `<span class="empty-symbol">!</span><strong>项目加载失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p><a class="button secondary" href="/app/research">返回研究首页</a>`;
     $("workspaceEmpty").classList.remove("hidden");
     $("workspaceContent").classList.add("hidden");
   }
@@ -255,18 +278,47 @@ async function loadProject() {
 
 // 用 SSE 增量推送替代 3 秒全量轮询：项目状态或日志变化时服务端推事件，
 // 客户端收到事件后再拉取最新快照，空闲时不再空转请求。
+// 前端再做一层合并节流（rAF 合并），并加断线降级（error 时退回低频轮询）。
 function connectEvents() {
   if (!state.projectId) return;
   if (state.events) state.events.close();
   const source = new EventSource(`/api/projects/${encodeURIComponent(state.projectId)}/events`);
-  source.addEventListener("update", () => {
-    if (state.projectId) loadProject();
-  });
+
+  state._rafId = 0;
+  state._fallbackTimer = 0;
+  const scheduleRefresh = () => {
+    // 合并到下一帧：同一批 SSE 事件只触发一次 loadProject
+    if (state._rafId) return;
+    state._rafId = window.requestAnimationFrame(() => {
+      state._rafId = 0;
+      if (state.projectId) loadProject();
+    });
+  };
+  const clearFallback = () => {
+    if (state._fallbackTimer) { window.clearInterval(state._fallbackTimer); state._fallbackTimer = 0; }
+  };
+  const startFallback = () => {
+    if (state._fallbackTimer) return;
+    // EventSource 断线期间退回 3 秒轮询，避免状态空窗
+    state._fallbackTimer = window.setInterval(() => {
+      if (state.projectId) loadProject();
+    }, 3000);
+  };
+
+  source.addEventListener("update", scheduleRefresh);
   // EventSource 会自动重连；连接建立后立即刷新一次以对齐首屏状态
   source.addEventListener("open", () => {
+    clearFallback();
     if (state.projectId) loadProject();
   });
+  source.addEventListener("error", startFallback);
   state.events = source;
+}
+
+function disconnectEvents() {
+  if (state.events) { try { state.events.close(); } catch (_) {} state.events = null; }
+  if (state._rafId) { window.cancelAnimationFrame(state._rafId); state._rafId = 0; }
+  if (state._fallbackTimer) { window.clearInterval(state._fallbackTimer); state._fallbackTimer = 0; }
 }
 
 async function continueProject() {
@@ -292,7 +344,16 @@ async function approve(approved) {
   finally { Lumitrace.setButtonBusy(button, false); }
 }
 
-function openDownload(path) { if (state.projectId) window.open(`/api/projects/${encodeURIComponent(state.projectId)}${path}`, "_blank"); }
+function openDownload(path) {
+  if (!state.projectId) return;
+  // 用 <a download> 而非 window.open：避免被 popup 拦截，也走浏览器的下载队列。
+  const link = document.createElement("a");
+  link.href = `/api/projects/${encodeURIComponent(state.projectId)}${path}`;
+  link.download = "";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
 
 async function typeset() {
   const button = $("typesetBtn");
@@ -377,7 +438,8 @@ async function deleteProject(button) {
     if (state.events) state.events.close();
     localStorage.removeItem("lumitrace.project");
     Lumitrace.toast("项目已删除", "warning");
-    window.location.href = "/research";
+    if (window.Lumitrace?.navigate) Lumitrace.navigate("/app/research");
+    else window.location.href = "/research";
   } catch (error) {
     Lumitrace.toast(error.message, "danger");
     Lumitrace.setButtonBusy(button, false);
@@ -407,25 +469,50 @@ async function submitClarification(skip) {
   }
 }
 
-$("continueBtn").addEventListener("click", continueProject);
-$("clarifySubmitBtn").addEventListener("click", () => submitClarification(false));
-$("clarifySkipBtn").addEventListener("click", () => submitClarification(true));
-$("retryBtn").addEventListener("click", () => retryProject($("retryBtn")));
-$("failureRetryBtn").addEventListener("click", () => retryProject($("failureRetryBtn")));
-$("rerunStage").addEventListener("change", updateRerunHint);
-$("rerunBtn").addEventListener("click", rerunProject);
-$("deleteBtn").addEventListener("click", () => deleteProject($("deleteBtn")));
-$("failureDeleteBtn").addEventListener("click", () => deleteProject($("failureDeleteBtn")));
-$("planMigrateBtn").addEventListener("click", () => migrateResearchPlan($("planMigrateBtn")));
-$("approveBtn").addEventListener("click", () => approve(true));
-$("rejectBtn").addEventListener("click", () => approve(false));
-$("downloadPdfBtn").addEventListener("click", () => openDownload("/download/final-report.pdf"));
-$("typesetBtn").addEventListener("click", typeset);
-$("downloadTexBtn").addEventListener("click", () => openDownload("/download/final-report.tex"));
+function bindEvents() {
+  $("continueBtn").addEventListener("click", continueProject);
+  $("clarifySubmitBtn").addEventListener("click", () => submitClarification(false));
+  $("clarifySkipBtn").addEventListener("click", () => submitClarification(true));
+  $("retryBtn").addEventListener("click", () => retryProject($("retryBtn")));
+  $("failureRetryBtn").addEventListener("click", () => retryProject($("failureRetryBtn")));
+  $("rerunStage").addEventListener("change", updateRerunHint);
+  $("rerunBtn").addEventListener("click", rerunProject);
+  $("deleteBtn").addEventListener("click", () => deleteProject($("deleteBtn")));
+  $("failureDeleteBtn").addEventListener("click", () => deleteProject($("failureDeleteBtn")));
+  $("planMigrateBtn").addEventListener("click", () => migrateResearchPlan($("planMigrateBtn")));
+  $("approveBtn").addEventListener("click", () => approve(true));
+  $("rejectBtn").addEventListener("click", () => approve(false));
+  $("downloadPdfBtn").addEventListener("click", () => openDownload("/download/final-report.pdf"));
+  $("typesetBtn").addEventListener("click", typeset);
+  $("downloadTexBtn").addEventListener("click", () => openDownload("/download/final-report.tex"));
+}
 
-async function bootstrap() {
+async function init() {
+  // SPA 下 URL 的 ?project= 会在导航时变化，需在每次进入视图时重新读取
+  const fromUrl = new URLSearchParams(window.location.search).get("project");
+  if (fromUrl) state.projectId = fromUrl;
+  bindEvents();
   await loadProject();
   connectEvents();
 }
 
-bootstrap();
+function destroy() {
+  disconnectEvents();
+  state.project = null;
+  state.artifactKey = null;
+  state.renderedArtifactKey = null;
+  state.renderedArtifactMarkup = null;
+  state.renderedArtifactVersion = null;
+  state._artifactTabsBound = false;
+  state.busy = false;
+}
+
+// SPA：注册视图供 router 调用；旧 /workspace 页面直接初始化。
+if (window.Lumitrace?.views?.register) {
+  Lumitrace.views.register("workspace", { init, destroy });
+}
+if (!IS_SPA) {
+  Lumitrace.mountShell("workspace");
+  init();
+}
+})();

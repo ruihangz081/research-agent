@@ -1,10 +1,13 @@
-Lumitrace.mountShell("results");
+(() => {
+const IS_SPA = window.location.pathname.startsWith("/app");
 
-const state = { projectId: Lumitrace.selectedProject(), projects: [], project: null, artifacts: [], selectedKey: null };
 const $ = (id) => document.getElementById(id);
+const state = { projectId: Lumitrace.selectedProject(), projects: [], project: null, artifacts: [], selectedKey: null, _listBound: false };
 
-[$("pdfIcon"), $("texIcon")].forEach((item) => { item.innerHTML = Lumitrace.icon("download", 17); });
-$("typesetIcon").innerHTML = Lumitrace.icon("arrow", 17);
+function decorateIcons() {
+  [$("pdfIcon"), $("texIcon")].forEach((item) => { item.innerHTML = Lumitrace.icon("download", 17); });
+  $("typesetIcon").innerHTML = Lumitrace.icon("arrow", 17);
+}
 
 function artifactGroup(key) {
   if (key === "final_report_tex" || key === "chart_manifest") return "delivery";
@@ -26,7 +29,17 @@ function renderList() {
   }
   if (!artifacts.some((item) => item.key === state.selectedKey)) state.selectedKey = artifacts[0].key;
   $("resultList").innerHTML = artifacts.map((artifact) => `<button class="result-item${artifact.key === state.selectedKey ? " active" : ""}" type="button" data-artifact="${artifact.key}"><span class="file-icon">${Lumitrace.icon("file", 16)}</span><span><strong>${Lumitrace.escapeHtml(artifact.label)}</strong><small>${artifact.exists ? Lumitrace.escapeHtml(artifact.name || "已生成") : "等待生成"}</small></span><span class="status-pill ${artifact.exists ? "success" : ""}">${artifact.exists ? "已生成" : "待生成"}</span></button>`).join("");
-  $("resultList").querySelectorAll("[data-artifact]").forEach((button) => button.addEventListener("click", () => { state.selectedKey = button.dataset.artifact; renderList(); loadPreview(); }));
+  // 事件委托：容器绑一次
+  if (!state._listBound) {
+    state._listBound = true;
+    $("resultList").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-artifact]");
+      if (!button) return;
+      state.selectedKey = button.dataset.artifact;
+      renderList();
+      loadPreview();
+    });
+  }
 }
 
 function updateDelivery() {
@@ -54,7 +67,12 @@ async function loadPreview() {
   $("documentPreview").innerHTML = '<div class="empty compact"><span class="spinner"></span><strong>正在读取成果</strong></div>';
   try {
     const data = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/artifacts/${encodeURIComponent(artifact.key)}`);
-    $("documentPreview").innerHTML = data.html || Lumitrace.renderMarkdown(data.content);
+    const isJsonArtifact = ["research_requirements", "research_tasks", "chart_manifest"].includes(artifact.key)
+      || artifact.key.startsWith("feedback_round_")
+      || artifact.key.startsWith("task_results_round_");
+    $("documentPreview").innerHTML = data.html || (isJsonArtifact
+      ? Lumitrace.renderArtifact(artifact.key, data.content)
+      : await Lumitrace.renderMarkdownAsync(data.content));
     Lumitrace.hydrateSourceCitations($("documentPreview"), state.projectId);
   } catch (error) {
     $("documentPreview").innerHTML = `<div class="empty"><span class="empty-symbol">!</span><strong>预览失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p></div>`;
@@ -89,7 +107,15 @@ async function initialize() {
   } catch (_) { showEmpty(); }
 }
 
-function openDownload(path) { if (state.projectId) window.open(`/api/projects/${encodeURIComponent(state.projectId)}${path}`, "_blank"); }
+function openDownload(path) {
+  if (!state.projectId) return;
+  const link = document.createElement("a");
+  link.href = `/api/projects/${encodeURIComponent(state.projectId)}${path}`;
+  link.download = "";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
 
 async function typeset() {
   Lumitrace.setButtonBusy($("typeset"), true, "排版中");
@@ -98,10 +124,33 @@ async function typeset() {
   finally { Lumitrace.setButtonBusy($("typeset"), false); }
 }
 
-$("projectSelect").addEventListener("change", () => { state.projectId = $("projectSelect").value; Lumitrace.rememberProject(state.projectId); loadProject(); });
-$("typeFilter").addEventListener("change", () => { renderList(); loadPreview(); });
-$("downloadPdf").addEventListener("click", () => openDownload("/download/final-report.pdf"));
-$("typeset").addEventListener("click", typeset);
-$("downloadTex").addEventListener("click", () => openDownload("/download/final-report.tex"));
+function bindEvents() {
+  $("projectSelect").addEventListener("change", () => { state.projectId = $("projectSelect").value; Lumitrace.rememberProject(state.projectId); loadProject(); });
+  $("typeFilter").addEventListener("change", () => { renderList(); loadPreview(); });
+  $("downloadPdf").addEventListener("click", () => openDownload("/download/final-report.pdf"));
+  $("typeset").addEventListener("click", typeset);
+  $("downloadTex").addEventListener("click", () => openDownload("/download/final-report.tex"));
+}
 
-initialize();
+function init() {
+  decorateIcons();
+  bindEvents();
+  initialize();
+}
+
+function destroy() {
+  state.project = null;
+  state.artifacts = [];
+  state.selectedKey = null;
+  state._listBound = false;
+}
+
+// SPA：注册视图供 router 调用；旧 /results 页面直接初始化。
+if (window.Lumitrace?.views?.register) {
+  Lumitrace.views.register("results", { init, destroy });
+}
+if (!IS_SPA) {
+  Lumitrace.mountShell("results");
+  init();
+}
+})();
