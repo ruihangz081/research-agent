@@ -61,7 +61,7 @@ ENV_PATH = config.PROJECT_ROOT / ".env"
 
 # 静态资源版本号：所有 HTML 里的 ?v= 应引用同一个常量，保证 CSS/JS 只缓存一份。
 # 修改任意 web_static 资源后 bump 此值即可让浏览器刷新缓存。
-STATIC_VERSION = "20260818-perf10"
+STATIC_VERSION = "20260819-usage-tooltip1"
 
 # 静态资源长缓存：资源 URL 携带 STATIC_VERSION，改内容即改版本号，
 # 因此可安全缓存较长时间，避免每次 304 revalidate。

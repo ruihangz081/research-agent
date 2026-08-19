@@ -37,6 +37,24 @@ function formatTokens(value) {
   return count.toLocaleString("zh-CN");
 }
 
+function formatExactTokens(value) {
+  return (Number(value) || 0).toLocaleString("zh-CN");
+}
+
+function formatUsageDate(date) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+  }).format(date);
+}
+
+function formatUsageDateRange(start, end) {
+  const formatter = new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" });
+  return `${formatter.format(start)}–${formatter.format(end)}`;
+}
+
 function bucketDaily(daily) {
   const map = new Map();
   daily.forEach((row) => map.set(row.date, row));
@@ -93,6 +111,7 @@ function renderUsageStats(usage) {
 }
 
 function renderUsageHeatmap(usage) {
+  hideUsageTooltip();
   const days = Math.max(7, Number(usage.days) || 364);
   const buckets = state.usageRange === "weekly"
     ? bucketWeekly(usage.daily || [])
@@ -124,14 +143,70 @@ function renderUsageHeatmap(usage) {
       const lookup = state.usageRange === "weekly" ? columnStart.toISOString().slice(0, 10) : key;
       const row = buckets.get(lookup);
       const value = row ? row.total_tokens : 0;
-      const title = value
-        ? `${key}：${formatTokens(value)} tokens（${row.calls} 次调用）`
-        : `${key}：无消耗`;
-      cells.push(`<i class="usage-cell level-${heatLevel(value, max)}" title="${title}"></i>`);
+      let title = formatUsageDate(current);
+      let metric = "当日用量";
+      let detail = `${row ? row.calls : 0} 次模型调用`;
+      if (state.usageRange === "weekly") {
+        const weekEnd = new Date(Math.min(today.getTime(), columnStart.getTime() + 6 * DAY_MS));
+        title = formatUsageDateRange(columnStart, weekEnd);
+        metric = "本周用量";
+      } else if (state.usageRange === "total") {
+        metric = "截至当日累计";
+        detail = "";
+      }
+      const ariaLabel = `${title}，${metric} ${formatExactTokens(value)} Token${detail ? `，${detail}` : ""}`;
+      cells.push(`<i class="usage-cell level-${heatLevel(value, max)}" data-usage-tooltip data-tooltip-title="${Lumitrace.escapeHtml(title)}" data-tooltip-metric="${metric}" data-tooltip-value="${formatExactTokens(value)}" data-tooltip-detail="${detail}" aria-label="${Lumitrace.escapeHtml(ariaLabel)}"></i>`);
     }
   }
   $("usageHeatmap").innerHTML = cells.join("");
   $("usageMonths").innerHTML = monthLabels.map((label) => `<span>${label}</span>`).join("");
+}
+
+function positionUsageTooltip(event) {
+  const tooltip = $("usageTooltip");
+  if (!tooltip || !tooltip.classList.contains("visible")) return;
+  const gap = 14;
+  const edge = 8;
+  let left = event.clientX + gap;
+  let top = event.clientY + gap;
+  tooltip.style.left = `${left}px`;
+  tooltip.style.top = `${top}px`;
+  const rect = tooltip.getBoundingClientRect();
+  if (rect.right > window.innerWidth - edge) left = event.clientX - rect.width - gap;
+  if (rect.bottom > window.innerHeight - edge) top = event.clientY - rect.height - gap;
+  tooltip.style.left = `${Math.max(edge, left)}px`;
+  tooltip.style.top = `${Math.max(edge, top)}px`;
+}
+
+function showUsageTooltip(cell, event) {
+  const tooltip = $("usageTooltip");
+  if (!tooltip) return;
+  tooltip.querySelector("[data-tooltip-title]").textContent = cell.dataset.tooltipTitle;
+  tooltip.querySelector("[data-tooltip-metric]").textContent = cell.dataset.tooltipMetric;
+  tooltip.querySelector("[data-tooltip-value]").textContent = `${cell.dataset.tooltipValue} Token`;
+  const detail = tooltip.querySelector("[data-tooltip-detail]");
+  detail.textContent = cell.dataset.tooltipDetail;
+  detail.hidden = !cell.dataset.tooltipDetail;
+  tooltip.classList.add("visible");
+  tooltip.setAttribute("aria-hidden", "false");
+  positionUsageTooltip(event);
+}
+
+function hideUsageTooltip() {
+  const tooltip = $("usageTooltip");
+  if (!tooltip) return;
+  tooltip.classList.remove("visible");
+  tooltip.setAttribute("aria-hidden", "true");
+}
+
+function bindUsageTooltip() {
+  const heatmap = $("usageHeatmap");
+  heatmap.addEventListener("pointerover", (event) => {
+    const cell = event.target.closest("[data-usage-tooltip]");
+    if (cell) showUsageTooltip(cell, event);
+  });
+  heatmap.addEventListener("pointermove", positionUsageTooltip);
+  heatmap.addEventListener("pointerleave", hideUsageTooltip);
 }
 
 function renderUsageRows(target, rows, labelKey) {
@@ -288,6 +363,7 @@ async function createProject(event) {
 }
 
 function bindEvents() {
+  bindUsageTooltip();
   $("openCreate").addEventListener("click", openDrawer);
   $("closeCreate").addEventListener("click", closeDrawer);
   $("cancelCreate").addEventListener("click", closeDrawer);
@@ -327,6 +403,7 @@ function init() {
 }
 
 function destroy() {
+  hideUsageTooltip();
   state.projects = [];
   state.usage = null;
   state._tableBound = false;

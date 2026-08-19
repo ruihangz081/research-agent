@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>研究首页 · 溯光 Lumitrace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260818-perf10" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260819-usage-tooltip1" />
   </head>
   <body>
     <div class="app-shell">
@@ -59,6 +59,11 @@
               <div id="usageStats" class="usage-stats"></div>
               <div class="usage-heatmap-block">
                 <div id="usageHeatmap" class="usage-heatmap" role="img" aria-label="Token 用量活动热力图"></div>
+                <div id="usageTooltip" class="usage-tooltip" role="tooltip" aria-hidden="true">
+                  <span data-tooltip-title></span>
+                  <div><small data-tooltip-metric></small><strong data-tooltip-value></strong></div>
+                  <small data-tooltip-detail></small>
+                </div>
                 <div id="usageMonths" class="usage-months" aria-hidden="true"></div>
                 <div class="usage-legend"><span>少</span><i class="usage-cell level-1"></i><i class="usage-cell level-2"></i><i class="usage-cell level-3"></i><i class="usage-cell level-4"></i><span>多</span></div>
               </div>
@@ -93,7 +98,7 @@
       </aside>
     </div>
 
-    <script src="/static/ui.js?v=20260818-perf10"></script>
-    <script src="/static/home.js?v=20260818-perf10"></script>
+    <script src="/static/ui.js?v=20260819-usage-tooltip1"></script>
+    <script src="/static/home.js?v=20260819-usage-tooltip1"></script>
   </body>
 </html>

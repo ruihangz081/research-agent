@@ -326,6 +326,19 @@ def test_results_sidebar_items_fill_the_available_width() -> None:
     assert f"styles.css?v={web_app.STATIC_VERSION}" in template
 
 
+def test_usage_heatmap_has_precise_hover_tooltip() -> None:
+    source = (web_app.STATIC_DIR / "home.js").read_text(encoding="utf-8")
+    styles = (web_app.STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+    template = (web_app.STATIC_DIR / "research.html").read_text(encoding="utf-8")
+
+    assert 'id="usageTooltip"' in template
+    assert "data-usage-tooltip" in source
+    assert 'toLocaleString("zh-CN")' in source
+    assert 'data-tooltip-value="${formatExactTokens(value)}"' in source
+    assert 'heatmap.addEventListener("pointerover"' in source
+    assert ".usage-tooltip.visible" in styles
+
+
 @pytest.mark.anyio
 async def test_web_migration_does_not_overwrite_valid_plan(
     tmp_path: Path,
