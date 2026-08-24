@@ -59,7 +59,7 @@ system prompt 中固定的 `research_requirements.json` 定义本次研究的必
 
 1. Read 提纲、源清单和验证报告以理解问题与边界；按需用 `InspectSourceEvidence` 读取目录中列出的 SUPPORTED EvidenceRecord
 2. 逐章节分析并检查不同章节的计算和结论是否自洽
-3. 每个事实性和定量结论使用 `[src:source_id:vN, locator]` 标准引用
+3. 每个事实性和定量结论使用 `[ev=ev_xxx]` 引用（引用文本由程序展开）
 4. 证据充分时将完整分析写入 `{analysis_path}`，并写出 `completed` AnalysisOutcome
 5. 证据不足时仍写出 `{analysis_path}` 说明局限，并写出 `needs_more_research` AnalysisOutcome；不得自行补证据
 
@@ -143,8 +143,8 @@ system prompt 中固定的 `research_requirements.json` 定义本次研究的必
 ## 章节 1：{提纲章节名}
 
 ### 核心发现
-- {发现 1} [src:source_id:vN, locator]
-- {发现 2} [src:source_id:vN, locator]
+- {发现 1} [ev=ev_xxx]
+- {发现 2} [ev=ev_xxx]
 
 > 章节标题只保留「章节 N：{名称}」这一种编号，不得再叠加「一、二、三」中文序号或「第 N 章」。
 
@@ -253,7 +253,14 @@ system prompt 中固定的 `research_requirements.json` 定义本次研究的必
 
 标注方式：
 
-[事实] [src:source_id:vN, ev=evidence_id, chunk=chunk_id, paragraph=N]
+[事实] [ev=ev_xxx]
+
+即：`[事实]` 与 `[ev=ev_xxx]` 必须是**两个独立方括号**，中间用一个空格分隔；
+`ev_xxx` 是从 `SUPPORTED EvidenceRecord Catalog` 里逐字复制的 `evidence_id`（
+`ev_` + 32 位十六进制）。引用文本（source_id、版本、chunk、locator）由程序自动
+展开，你**不要**手抄 `[src:...]` 整段。过渡期内，手抄的完整
+`[src:source_id:vN, ev=evidence_id, chunk=chunk_id, paragraph=N]` 形式仍被接受，
+但推荐只写 `[ev=ev_xxx]` 以避免抄错。
 
 ### B. 计算或推导结果
 
@@ -261,7 +268,7 @@ system prompt 中固定的 `research_requirements.json` 定义本次研究的必
 
 标注方式：
 
-[推导｜依据如下] [src:source_id_1:vN, ev=evidence_id_1, chunk=chunk_id_1, paragraph=N] [src:source_id_2:vN, ev=evidence_id_2, chunk=chunk_id_2, paragraph=N]
+[推导｜依据如下] [ev=ev_xxx_1] [ev=ev_xxx_2]
 
 必须展示关键公式、假设和计算过程。
 
@@ -286,13 +293,13 @@ system prompt 中固定的 `research_requirements.json` 定义本次研究的必
 ### EvidenceRecord 硬边界
 
 * “Deterministic Evidence Catalog”中的 `SUPPORTED` EvidenceRecord 是报告事实与数字的唯一证据集合。
-* 每次引用必须从证据目录中**逐字复制完整引用标记**，包括 `source_id`、版本、`evidence_id`、`chunk_id` 和稳定 locator。
+* 每次引用只写 `[ev=ev_xxx]`，`ev_xxx` 必须从证据目录中**逐字复制** `evidence_id`（`ev_` + 32 位十六进制），引用文本由程序展开；禁止手抄 source_id / 版本 / chunk / locator。
 * 禁止自创或改写 locator，例如“财报摘要”“统计页”“End Market Summary”。
 * 禁止用反引号包裹引用标记；引用必须保持普通 Markdown 文本，确保系统能够识别和审计。
 * 一条 EvidenceRecord 只能支持其 `claim` 与 `excerpt` 明确覆盖的内容，不得用同一来源 ID 扩张支持该记录未包含的数字或判断。
 * `round_*.md`、源清单和验证报告用于理解研究过程，但其中的普通 `[src: ID]` 或文字摘要不是可直接引用的证据。
 * 即使在项目材料中读到了某项信息，只要它没有对应的 `SUPPORTED` EvidenceRecord，也必须作为 gap、局限或待验证假设处理，不得写成已验证事实。
-* 写入报告后逐项检查引用；任何无法与证据目录逐字匹配的引用都必须删除或改为正确的 EvidenceRecord 引用。
+* 写入报告后逐项检查引用；任何无法与证据目录逐字匹配的 `ev_` 都必须删除或改为正确的 EvidenceRecord 引用。
 
 ---
 
@@ -479,11 +486,11 @@ system prompt 中固定的 `research_requirements.json` 定义本次研究的必
 
 所有定量结论必须标注：
 
-[src:source_id:vN, ev=evidence_id, chunk=chunk_id, paragraph=N]
+[ev=ev_xxx]
 
 如果是计算结果，则标注：
 
-[计算｜依据如下] [src:source_id_1:vN, ev=evidence_id_1, chunk=chunk_id_1, paragraph=N] [src:source_id_2:vN, ev=evidence_id_2, chunk=chunk_id_2, paragraph=N]
+[计算｜依据如下] [ev=ev_xxx_1] [ev=ev_xxx_2]
 
 禁止出现无法追溯来源的精确数字。
 
@@ -958,7 +965,7 @@ Agent4 不进行新的外部搜索或安装 skill。发现现有工具或证据�
 
 | 指标或事实 | 数值/内容 | 时间  | 口径  | 来源        |
 | ----- | ----- | --- | --- | --------- |
-| ...   | ...   | ... | ... | [src:source_id:vN, ev=evidence_id, chunk=chunk_id, paragraph=N] |
+| ...   | ...   | ... | ... | [ev=ev_xxx] |
 
 ### 3. 核心发现
 
@@ -1280,7 +1287,7 @@ Agent4 不进行新的外部搜索或安装 skill。发现现有工具或证据�
 
 ---
 
-- 所有事实性和定量结论必须标注标准来源引用 `[src:source_id:vN, locator]`
+- 所有事实性和定量结论必须标注引用 `[ev=ev_xxx]`（`ev_xxx` 逐字复制自证据目录）
 - 每个引用的 source/version 必须来自 SUPPORTED EvidenceRecord 目录
 - 不使用裸 URL、模型记忆、常识或未经验证的原始采集内容代替 EvidenceRecord
 - 不编造数据或趋势；不能由已验证事实推出时必须判定证据不足

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 
 from .. import config
+from ..pipeline_errors import DeterministicContentError
 from ..research_plan import ResearchPlanError, require_plan
 from .enums import SourceStatus, VerificationStatus
 from .models import (
@@ -38,8 +39,13 @@ _SPACE_RE = re.compile(r"\s+")
 _YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 
 
-class TasksError(RuntimeError):
-    """`03_tasks.json` 缺失、损坏或校验失败。"""
+class TasksError(DeterministicContentError):
+    """`03_tasks.json` 缺失、损坏或校验失败。
+
+    台账损坏、ID 抄错、回填多字段这类错误是确定性内容错误：重试 Agent 不会改变
+    已经写出的上游产物，因此继承 ``DeterministicContentError``，让 orchestrator
+    走 ``except PipelineError`` 直接落状态、不再无意义重跑。
+    """
 
 
 def load_tasks_file(path: Path) -> ResearchTasksFile:
@@ -206,6 +212,26 @@ def _known_question_ids(state: "ProjectState") -> set[str]:
         raise TasksError(str(exc)) from exc
 
 
+def _resolve_evidence(
+    evidence_id: str,
+    evidence_lookup: dict[str, EvidenceRecord],
+) -> EvidenceRecord | None:
+    """按 ``evidence_id`` 精确查找；找不到时对疑似被 LLM 截断的 ID 做保守前缀解析。
+
+    evidence_id 形如 ``ev_`` + 32 位十六进制。Agent3 偶发会把末尾字符截掉
+    （如 ``ev_...5469cc53`` 写成 ``ev_...5469cc``），导致严格查找失败。仅当输入是
+    **恰好一个** 真实 evidence_id 的严格前缀时才自愈返回该记录；否则返回 None，
+    由调用方按未知证据 fail-closed，绝不把歧义 ID 静默解析成错误证据。
+    """
+    evidence = evidence_lookup.get(evidence_id)
+    if evidence is not None:
+        return evidence
+    matches = [real for real in evidence_lookup if real.startswith(evidence_id)]
+    if len(matches) == 1:
+        return evidence_lookup[matches[0]]
+    return None
+
+
 def _validated_evidence_sources(
     update: ResearchTaskUpdate,
     evidence_lookup: dict[str, EvidenceRecord],
@@ -214,10 +240,11 @@ def _validated_evidence_sources(
 ) -> tuple[list[str], list[str]]:
     source_ids: list[str] = []
     evidence_ids: list[str] = []
-    for evidence_id in update.completed_evidence_ids:
-        evidence = evidence_lookup.get(evidence_id)
+    for raw_evidence_id in update.completed_evidence_ids:
+        evidence = _resolve_evidence(raw_evidence_id, evidence_lookup)
         if evidence is None:
-            raise TasksError(f"task references unknown EvidenceRecord: {evidence_id}")
+            raise TasksError(f"task references unknown EvidenceRecord: {raw_evidence_id}")
+        evidence_id = evidence.evidence_id
         if evidence.research_question_id != update.question_id:
             continue
         if evidence.verification_status != VerificationStatus.SUPPORTED:

@@ -9,11 +9,9 @@
 \RequirePackage{float}
 \RequirePackage{setspace}
 \RequirePackage{etoolbox}
-\definecolor{BrokerBlue}{HTML}{163A5F}
-\definecolor{BrokerGold}{HTML}{D59B2D}
-\definecolor{BrokerMuted}{HTML}{66727E}
-\definecolor{BrokerGrid}{HTML}{DCE3E8}
-\definecolor{BrokerText}{HTML}{18212B}
+% 颜色命令由 brokerage-tokens.tex 生成（单一来源 design-tokens.json），命令名保持不变。
+% report_formatting.py 在拷贝 sty 时同时生成 brokerage-tokens.tex 到项目目录。
+\input{brokerage-tokens.tex}
 \color{BrokerText}
 \setstretch{1.32}
 \setlength{\parindent}{2em}

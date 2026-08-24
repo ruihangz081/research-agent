@@ -1,0 +1,29 @@
+{
+  "name": "brokerage_research_v1",
+  "color": {
+    "primary": "#163A5F",
+    "accent": "#D59B2D",
+    "text": "#18212B",
+    "muted": "#66727E",
+    "grid": "#DCE3E8",
+    "surface": "#FFFFFF",
+    "surface_alt": "#F6F8FA",
+    "heading_sub": "#294F73",
+    "series": ["#163A5F", "#D59B2D", "#4F759B", "#8AA1B5", "#9B4D45", "#5D7A68"],
+    "forecast": "#8AA1B5"
+  },
+  "font": {
+    "cjk_sans": ["PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC"],
+    "cjk_serif": ["Songti SC", "STSong", "SimSun", "Noto Serif CJK SC"],
+    "chart_candidates": ["PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Arial Unicode MS", "DejaVu Sans"]
+  },
+  "chart": {
+    "width_inches": 7.2,
+    "height_inches": 4.2,
+    "dpi": 180
+  },
+  "scale": {
+    "web": { "body": "15px", "h1": "28px", "h2": "21px", "h3": "17px", "table": "13px" },
+    "print": { "body": "11.5pt", "h1": "20pt", "h2": "15.5pt", "h3": "12.5pt", "table": "10pt" }
+  }
+}

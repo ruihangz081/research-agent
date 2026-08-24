@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import logging
 import shutil
 import traceback
 from dataclasses import dataclass
@@ -33,6 +34,12 @@ from rich.console import Console
 from . import checkpoints, config, research_plan, token_usage
 from .agent_loop import AgentLoopStuckError
 from .agents import analyst, collector, formatter, strategist, validator
+from .pipeline_errors import (
+    DETERMINISTIC_CONTENT_HINT,
+    DeterministicContentError,
+    PipelineError,
+)
+from .report_formatting import canonicalize_report_text, count_merged_citations
 from .research_plan import ResearchPlanError
 from .sources.citations import audit_analysis_citations
 from .sources.claims import ClaimsError, load_claims_file, validate_claims
@@ -47,6 +54,7 @@ from .sources.tasks import (
 from .state import ProjectState, Stage
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 MAX_RETRIES: int = 2
 
@@ -118,6 +126,11 @@ async def _safe_run(
                 f"{stage_name} 因重复工具错误提前停止：{e}。"
                 "请修正工具参数后从当前项目断点续跑。"
             ) from e
+        except DeterministicContentError as e:
+            # 内容错误不是瞬态故障：字形缺失、ID 抄错这类失败重跑结果完全相同。
+            # 直接落状态抛出，绝不进 MAX_RETRIES 次无意义重试。
+            state.mark_failure(stage_name, str(e))
+            raise
         except PipelineError as e:
             # Deterministic gates are not transient agent failures. Retrying would
             # waste model calls and mislabel the blocked stage as an agent crash.
@@ -149,12 +162,6 @@ async def _safe_run(
     ) from last_err
 
 
-class PipelineError(RuntimeError):
-    """流水线阶段不可恢复的错误。"""
-
-    pass
-
-
 class DeliveryBlockedError(PipelineError):
     """Delivery is paused until deterministic evidence requirements are met."""
 
@@ -177,7 +184,7 @@ class ResearchPlanBlockedError(PipelineError):
     pass
 
 
-class AnalysisBoundaryError(PipelineError):
+class AnalysisBoundaryError(DeterministicContentError):
     """Agent4 outcome or citations failed deterministic validation."""
 
 
@@ -371,8 +378,20 @@ def _validate_analysis_transition(
 
     analysis_text = analysis_path.read_text(encoding="utf-8")
     service = get_service(config.SOURCE_DATA_DIR)
+    merged_count = count_merged_citations(analysis_text)
+    canonical_text = canonicalize_report_text(
+        analysis_text, repository=service.repository, project_id=state.project_dir.name
+    )
+    if merged_count:
+        # 融合式引用被归一化：必须留痕，不得静默。
+        state.notes["normalized_citation_count"] = merged_count
+        logger.warning(
+            "Agent4 引用归一化：%d 处 [事实｜src:...] 融合式引用已拆分",
+            merged_count,
+        )
+        state.save()
     citation_errors = audit_analysis_citations(
-        analysis_text,
+        canonical_text,
         state.project_dir.name,
         service.repository,
     )
@@ -380,6 +399,7 @@ def _validate_analysis_transition(
         state.notes["analysis_citation_audit_errors"] = citation_errors
         error = AnalysisBoundaryError(
             "Agent4 来源引用审计失败：" + "; ".join(citation_errors)
+            + f"（{DETERMINISTIC_CONTENT_HINT}）"
         )
         state.mark_failure("Agent4·来源引用审计", str(error))
         raise error

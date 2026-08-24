@@ -30,6 +30,14 @@ async function loadDefaults() {
 
 const DAY_MS = 86400000;
 
+/** 本地时区的 YYYY-MM-DD（不能用 toISOString：它会转 UTC，东八区会偏移一天）。 */
+function localDateKey(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
 function formatTokens(value) {
   const count = Number(value) || 0;
   if (count >= 100000000) return `${(count / 100000000).toFixed(count >= 1000000000 ? 0 : 1)}亿`;
@@ -68,7 +76,7 @@ function bucketWeekly(daily) {
     const date = new Date(`${row.date}T00:00:00`);
     const offset = (date.getDay() + 6) % 7;
     const monday = new Date(date.getTime() - offset * DAY_MS);
-    const key = monday.toISOString().slice(0, 10);
+    const key = localDateKey(monday);
     const existing = map.get(key) || { date: key, total_tokens: 0, calls: 0 };
     existing.total_tokens += row.total_tokens;
     existing.calls += row.calls;
@@ -139,8 +147,8 @@ function renderUsageHeatmap(usage) {
     for (let day = 0; day < 7; day += 1) {
       const current = new Date(columnStart.getTime() + day * DAY_MS);
       if (current > today) { cells.push('<i class="usage-cell is-empty"></i>'); continue; }
-      const key = current.toISOString().slice(0, 10);
-      const lookup = state.usageRange === "weekly" ? columnStart.toISOString().slice(0, 10) : key;
+      const key = localDateKey(current);
+      const lookup = state.usageRange === "weekly" ? localDateKey(columnStart) : key;
       const row = buckets.get(lookup);
       const value = row ? row.total_tokens : 0;
       let title = formatUsageDate(current);
@@ -169,11 +177,9 @@ function positionUsageTooltip(event) {
   const edge = 8;
   let left = event.clientX + gap;
   let top = event.clientY + gap;
-  tooltip.style.left = `${left}px`;
-  tooltip.style.top = `${top}px`;
   const rect = tooltip.getBoundingClientRect();
-  if (rect.right > window.innerWidth - edge) left = event.clientX - rect.width - gap;
-  if (rect.bottom > window.innerHeight - edge) top = event.clientY - rect.height - gap;
+  if (left + rect.width > window.innerWidth - edge) left = event.clientX - rect.width - gap;
+  if (top + rect.height > window.innerHeight - edge) top = event.clientY - rect.height - gap;
   tooltip.style.left = `${Math.max(edge, left)}px`;
   tooltip.style.top = `${Math.max(edge, top)}px`;
 }
@@ -201,12 +207,25 @@ function hideUsageTooltip() {
 
 function bindUsageTooltip() {
   const heatmap = $("usageHeatmap");
+  const tooltip = $("usageTooltip");
+  if (tooltip.parentElement !== document.body) document.body.appendChild(tooltip);
+  let rafId = 0;
   heatmap.addEventListener("pointerover", (event) => {
     const cell = event.target.closest("[data-usage-tooltip]");
     if (cell) showUsageTooltip(cell, event);
   });
-  heatmap.addEventListener("pointermove", positionUsageTooltip);
-  heatmap.addEventListener("pointerleave", hideUsageTooltip);
+  heatmap.addEventListener("pointermove", (event) => {
+    // rAF 节流：避免 pointermove 高频触发时每帧强制 getBoundingClientRect
+    if (rafId) return;
+    rafId = window.requestAnimationFrame(() => {
+      rafId = 0;
+      positionUsageTooltip(event);
+    });
+  });
+  heatmap.addEventListener("pointerleave", () => {
+    if (rafId) { window.cancelAnimationFrame(rafId); rafId = 0; }
+    hideUsageTooltip();
+  });
 }
 
 function renderUsageRows(target, rows, labelKey) {
@@ -404,6 +423,7 @@ function init() {
 
 function destroy() {
   hideUsageTooltip();
+  $("usageTooltip")?.remove();
   state.projects = [];
   state.usage = null;
   state._tableBound = false;

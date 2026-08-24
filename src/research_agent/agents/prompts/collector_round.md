@@ -121,6 +121,7 @@ system prompt 可能注入「结构化补研任务」表（来自 `03_tasks.json
 - 未成功捕获为项目来源的网页事实不得保留，也不得把草案源编号伪装成项目 `source_id`
 - 每项任务必须使用台账中的原 `task_id`；Agent2 不得宣布任务 `completed` 或 `waived`
 - 回填状态只能是 `sourced` 或 `blocked`；前者必须提供真实项目 `source_id`，后者必须填写 `blocked_reason`
+- 回填 JSON 每个 result 对象**只允许** `task_id`、`status`、`source_ids`、`blocked_reason` 四个字段；`question_id` 属于任务台账（`03_tasks.json`）而非回填，**严禁**写入回填 JSON，否则会因 `extra_forbidden` 校验失败
 - 不确定的数据**不写**，列入"未能获取"
 - 每轮只产出一份 md，不要拆分多文件
 - 完成后用一句话告知"第 N 轮采集完成"，然后结束

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from . import config
 from .agent_skills import load_project_skill
 from .llm.types import ChatMessage
+from .pipeline_errors import DETERMINISTIC_CONTENT_HINT, DeterministicContentError
 
 if TYPE_CHECKING:
     from .llm import LLMClient
@@ -26,6 +27,8 @@ SUPPORTED_CHART_TYPES = {
     "scatter",
     "heatmap",
     "waterfall",
+    "horizontal_bar",
+    "range_bar",
 }
 _SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _FORBIDDEN_SPEC_KEYS = {
@@ -40,6 +43,67 @@ _FORBIDDEN_SPEC_KEYS = {
     "values",
 }
 _ALLOWED_MARKS = {"bar", "line", "point", "area", "rule", "rect", "text", "tick"}
+
+
+class ChartVisual(BaseModel):
+    """声明式视觉参数（不包含任何可执行绘图代码）。"""
+
+    orientation: Literal["auto", "vertical", "horizontal"] = "auto"
+    show_values: bool = True
+    highlight_labels: list[str] = Field(default_factory=list)
+    highlight_series: list[str] = Field(default_factory=list)
+    number_format: Literal["auto", "integer", "decimal_1", "percent_1", "multiple_1"] = "auto"
+    legend_position: Literal["auto", "top", "right", "none"] = "auto"
+
+
+class ReferenceLine(BaseModel):
+    """语义参考线：只允许固定数值或绑定现有 label，禁止物理画布坐标。"""
+
+    axis: Literal["value", "category"] = "value"
+    value: float | None = None
+    category: str | None = None
+    label: str = Field(default="", max_length=80)
+
+    @model_validator(mode="after")
+    def validate_anchor(self) -> "ReferenceLine":
+        if self.axis == "value" and self.value is None:
+            raise ValueError("value 轴参考线必须提供 value")
+        if self.axis == "category" and not self.category:
+            raise ValueError("category 轴参考线必须提供 category")
+        if self.axis == "value" and self.value is not None and not math.isfinite(self.value):
+            raise ValueError("参考线 value 必须为有限数值")
+        return self
+
+
+class Band(BaseModel):
+    """区间带：预测区间、合理估值区间、阈值区间。"""
+
+    axis: Literal["value", "category"] = "value"
+    lower: float | None = None
+    upper: float | None = None
+    label: str = Field(default="", max_length=80)
+
+    @model_validator(mode="after")
+    def validate_band(self) -> "Band":
+        if self.lower is None or self.upper is None:
+            raise ValueError("band 必须提供 lower 与 upper")
+        if self.lower >= self.upper:
+            raise ValueError("band 的 lower 必须小于 upper")
+        return self
+
+
+class Callout(BaseModel):
+    """点注释：绑定现有 label 或数值点，禁止任意坐标。"""
+
+    label: str = Field(min_length=1, max_length=120)
+    value: float | None = None
+    text: str = Field(min_length=1, max_length=200)
+
+
+class ChartProvenance(BaseModel):
+    """图表候选 claim 集合——仅作待核验线索，不是通过依据。"""
+
+    claim_ids: list[str] = Field(default_factory=list)
 
 
 class ChartSeries(BaseModel):
@@ -71,6 +135,11 @@ class ChartSpec(BaseModel):
     note: str = Field(default="", max_length=300)
     required: bool = True
     vega_lite_spec: dict[str, Any] | None = None
+    visual: ChartVisual = Field(default_factory=ChartVisual)
+    reference_lines: list[ReferenceLine] = Field(default_factory=list)
+    bands: list[Band] = Field(default_factory=list)
+    callouts: list[Callout] = Field(default_factory=list)
+    provenance: ChartProvenance | None = None
 
     @field_validator("id")
     @classmethod
@@ -110,11 +179,27 @@ class ChartSpec(BaseModel):
         names = [series.name for series in self.series]
         if len(names) != len(set(names)):
             raise ValueError(f"chart {self.id} 的 series.name 必须唯一")
+        if self.type == "range_bar" and len(self.series) != 2:
+            raise ValueError(f"range_bar {self.id} 必须恰好两个 series（lower / upper）")
+        known_labels = set(self.labels)
+        for callout in self.callouts:
+            if callout.label not in known_labels:
+                raise ValueError(f"chart {self.id} 的 callout.label 不在 labels 中：{callout.label}")
+        for highlight in self.visual.highlight_labels:
+            if highlight not in known_labels:
+                raise ValueError(f"chart {self.id} 的 highlight_labels 不在 labels 中：{highlight}")
+        known_series = set(names)
+        for highlight in self.visual.highlight_series:
+            if highlight not in known_series:
+                raise ValueError(f"chart {self.id} 的 highlight_series 不在 series 中：{highlight}")
+        for ref in self.reference_lines:
+            if ref.axis == "category" and ref.category not in known_labels:
+                raise ValueError(f"chart {self.id} 的 category 参考线不在 labels 中：{ref.category}")
         return self
 
 
 class ChartManifest(BaseModel):
-    version: Literal[1] = 1
+    version: Literal[1, 2] = 1
     charts: list[ChartSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -142,16 +227,50 @@ def load_chart_manifest(path: Path, *, max_charts: int | None = None) -> ChartMa
     limit = config.REPORT_MAX_CHARTS if max_charts is None else max_charts
     if len(manifest.charts) > limit:
         raise ValueError(f"图表数量 {len(manifest.charts)} 超过上限 {limit}")
+    # 同一 placement_after 出现多张图时，读者会在同一锚点后连撞两张图。仅对 v2
+    # 新输出阻断；v1 历史清单允许继续渲染（旧项目存在实测撞车，按兼容策略放行，
+    # 重新运行 Agent5 时输出 v2 才会被这道门拦下）。
+    if manifest.version == 2:
+        anchors: dict[str, str] = {}
+        for chart in manifest.charts:
+            if not chart.placement_after:
+                continue
+            previous = anchors.get(chart.placement_after)
+            if previous is not None and previous != chart.id:
+                raise DeterministicContentError(
+                    f"图表 {previous} 与 {chart.id} 共享同一 placement_after 锚点："
+                    f"{chart.placement_after!r}（{DETERMINISTIC_CONTENT_HINT}）"
+                )
+            anchors[chart.placement_after] = chart.id
     return manifest
 
 
 def _load_theme() -> dict[str, Any]:
-    skill = load_project_skill(config.REPORT_FORMATTING_SKILL)
-    path = skill.assets_dir / "theme.json"
-    theme = json.loads(path.read_text(encoding="utf-8"))
-    if theme.get("name") != config.REPORT_THEME:
-        raise ValueError(f"未找到报告主题：{config.REPORT_THEME}")
-    return theme
+    """从 design tokens 派生图表主题（键名保持历史契约，_draw_matplotlib 不改）。
+
+    旧实现读 skills/.../assets/theme.json；P1-B 起改为读单一来源
+    design-tokens.json，返回 dict 键名不变：colors / forecast_color / grid_color /
+    text_color / muted_color / background_color / font_candidates /
+    figure_width_inches / figure_height_inches / dpi。
+    """
+    from .design_tokens import load_design_tokens
+
+    tokens = load_design_tokens()
+    color = tokens.color
+    chart = tokens.chart
+    return {
+        "name": tokens.name,
+        "colors": list(color["series"]),
+        "forecast_color": color["forecast"],
+        "grid_color": color["grid"],
+        "text_color": color["text"],
+        "muted_color": color["muted"],
+        "background_color": color["surface"],
+        "font_candidates": list(tokens.font["chart_candidates"]),
+        "figure_width_inches": chart["width_inches"],
+        "figure_height_inches": chart["height_inches"],
+        "dpi": chart["dpi"],
+    }
 
 
 def _safe_values(values: list[float | None]) -> list[float]:
@@ -167,6 +286,52 @@ def _format_axis(value: float, _position: int) -> str:
     if absolute >= 10:
         return f"{value:,.1f}".rstrip("0").rstrip(".")
     return f"{value:,.2f}".rstrip("0").rstrip(".")
+
+
+#: 数值标签格式：按 unit 语义选择（百分数/倍数/整数/一位小数），不依赖物理轴。
+_PERCENT_UNITS = ("%", "％", "pct", "percent", "同比", "同比增速", "同比变动")
+_MULTIPLE_UNITS = ("倍", "x", "X", "PE", "P/E", "P/S", "P/ARR", "EV/EBITDA")
+
+
+def _is_percent_unit(unit: str) -> bool:
+    return any(token in unit for token in _PERCENT_UNITS)
+
+
+def _is_multiple_unit(unit: str) -> bool:
+    return any(token in unit for token in _MULTIPLE_UNITS)
+
+
+def _format_value_label(value: float, unit: str, number_format: str) -> str:
+    """按显示语义格式化关键值标签；仅用于整数值标签，不用于坐标轴刻度。"""
+    if math.isnan(value):
+        return ""
+    if number_format == "percent_1" or (number_format == "auto" and _is_percent_unit(unit)):
+        return f"{value:.1f}%"
+    if number_format == "multiple_1" or (number_format == "auto" and _is_multiple_unit(unit)):
+        return f"{value:.1f}x"
+    if number_format == "decimal_1":
+        return f"{value:.1f}"
+    if number_format == "integer":
+        return f"{value:,.0f}"
+    # auto：整数单位走千分位整数，其余一位小数（保留一位便于对齐）
+    absolute = abs(value)
+    if absolute >= 1000 or float(absolute).is_integer():
+        return f"{value:,.0f}"
+    return f"{value:,.1f}"
+
+
+def _resolve_orientation(chart: ChartSpec) -> str:
+    """auto：按标签总宽度阈值自动切 horizontal（长标签/多类别自动横向）。"""
+    if chart.type == "horizontal_bar":
+        return "horizontal"
+    if chart.visual.orientation != "auto":
+        return chart.visual.orientation
+    total_width = sum(len(label) for label in chart.labels)
+    max_label = max((len(label) for label in chart.labels), default=0)
+    # 类别多或标签总宽超阈值 → 横向；否则竖向。
+    if len(chart.labels) > 6 or total_width > 36 or max_label > 8:
+        return "horizontal"
+    return "vertical"
 
 
 def _draw_matplotlib(chart: ChartSpec, output_dir: Path, theme: dict[str, Any]) -> ChartAsset:
@@ -193,37 +358,160 @@ def _draw_matplotlib(chart: ChartSpec, output_dir: Path, theme: dict[str, Any]) 
         "figure.facecolor": theme["background_color"],
         "axes.facecolor": theme["background_color"],
     }
+    orientation = _resolve_orientation(chart)
+    horizontal = orientation == "horizontal" and chart.type not in {
+        "scatter", "heatmap", "waterfall", "combo", "stacked_bar", "line"
+    }
+    # 横向图高按类别数自适应；竖向保持默认。
+    height = theme["figure_height_inches"]
+    if horizontal:
+        height = max(2.2, 0.55 * len(chart.labels) + 1.6)
+
     with plt.rc_context(rc):
         fig, ax = plt.subplots(
-            figsize=(theme["figure_width_inches"], theme["figure_height_inches"])
+            figsize=(theme["figure_width_inches"], height)
         )
         positions = list(range(len(chart.labels)))
         ax.yaxis.set_major_formatter(ticker.FuncFormatter(_format_axis))
         ax.grid(axis="y", color=theme["grid_color"], linewidth=0.7, alpha=0.8)
         ax.set_axisbelow(True)
 
+        # 预测分界竖线（line 图，标记 actual → forecast/estimate 的转折点）。
+        def _draw_forecast_boundary(series: ChartSeries) -> None:
+            kinds = series.value_kind
+            boundary = next((i for i, kind in enumerate(kinds) if kind != "actual"), None)
+            if boundary is None or boundary == 0:
+                return
+            # 分界落在第 boundary 个点与前一 actual 点之间。
+            x = positions[boundary] - 0.5
+            if horizontal:
+                # 横向图：类别在 y 轴，预测分界应是水平线。
+                ax.axhline(x, color=theme["muted_color"], linewidth=0.8, linestyle=":")
+            else:
+                ax.axvline(x, color=theme["muted_color"], linewidth=0.8, linestyle=":")
+
+        def _draw_reference_lines_and_bands() -> None:
+            for band in chart.bands:
+                if band.axis == "category":
+                    continue
+                if horizontal:
+                    ax.axvspan(band.lower, band.upper, color=theme["grid_color"], alpha=0.35)
+                else:
+                    ax.axhspan(band.lower, band.upper, color=theme["grid_color"], alpha=0.35)
+            for ref in chart.reference_lines:
+                if ref.axis == "category":
+                    continue
+                if horizontal:
+                    ax.axvline(ref.value, color=colors[1], linewidth=1.0, linestyle="--")
+                    if ref.label:
+                        ax.text(ref.value, -0.5, ref.label, ha="center", va="top", fontsize=8, color=colors[1])
+                else:
+                    ax.axhline(ref.value, color=colors[1], linewidth=1.0, linestyle="--")
+                    if ref.label:
+                        ax.text(-0.5, ref.value, ref.label, ha="right", va="center", fontsize=8, color=colors[1])
+
+        def _annotate_bar_values(bars, values, unit, number_format, *, horizontal: bool, series_name: str) -> None:
+            if not chart.visual.show_values:
+                return
+            for rect, value in zip(bars, values):
+                if value is None or (isinstance(value, float) and math.isnan(value)):
+                    continue
+                if horizontal:
+                    ax.text(rect.get_width(), rect.get_y() + rect.get_height() / 2,
+                            _format_value_label(float(value), unit, number_format),
+                            va="center", ha="left", fontsize=7.5)
+                else:
+                    ax.text(rect.get_x() + rect.get_width() / 2, rect.get_height(),
+                            _format_value_label(float(value), unit, number_format),
+                            ha="center", va="bottom", fontsize=7.5)
+
         if chart.type == "line":
             for index, series in enumerate(chart.series):
                 values = _safe_values(series.values)
                 color = colors[index % len(colors)]
-                actual = [value if kind == "actual" else math.nan for value, kind in zip(values, series.value_kind)]
-                projected = [value if kind != "actual" else math.nan for value, kind in zip(values, series.value_kind)]
-                first_projected = next((i for i, kind in enumerate(series.value_kind) if kind != "actual"), None)
-                if first_projected and not math.isnan(values[first_projected - 1]):
-                    projected[first_projected - 1] = values[first_projected - 1]
-                ax.plot(positions, actual, marker="o", linewidth=2.0, color=color, label=series.name)
+                kinds = series.value_kind
+                actual_count = sum(1 for kind in kinds if kind == "actual")
+                series_label = series.name if len(chart.series) > 1 else None
+                # actual <2 时不画实线段（画不出），只用实心标记 + 预测分界竖线表达；
+                # 其余点按 forecast 虚线绘制。无论哪个分支，都要把 label 交给第一条
+                # 画出的线，避免 legend 空。
+                if actual_count >= 2:
+                    actual = [value if kind == "actual" else math.nan for value, kind in zip(values, kinds)]
+                    ax.plot(positions, actual, marker="o", linewidth=2.0, color=color,
+                            label=series_label)
+                projected = [value if kind != "actual" else math.nan for value, kind in zip(values, kinds)]
                 if any(not math.isnan(value) for value in projected):
-                    ax.plot(positions, projected, marker="o", linewidth=2.0, linestyle="--", color=color)
+                    ax.plot(positions, projected, marker="o", linewidth=2.0, linestyle="--",
+                            color=color, label=series_label if actual_count < 2 else None)
+                # actual <2：单独把 actual 点用实心标记画出来（不连线）
+                if actual_count < 2:
+                    for i, kind in enumerate(kinds):
+                        if kind == "actual" and not math.isnan(values[i]):
+                            ax.plot([positions[i]], [values[i]], marker="o", markersize=7,
+                                    color=color, linestyle="none",
+                                    label=series_label if not any(not math.isnan(v) for v in projected) else None)
+                _draw_forecast_boundary(series)
+                # 标注首末点与极值
+                if chart.visual.show_values:
+                    _annotate_line_values(ax, positions, values, chart.unit, chart.visual.number_format)
 
-        elif chart.type == "bar":
+        elif chart.type == "bar" or chart.type == "horizontal_bar":
             width = 0.76 / len(chart.series)
             for index, series in enumerate(chart.series):
                 offset = (index - (len(chart.series) - 1) / 2) * width
-                bar_colors = [
-                    colors[index % len(colors)] if kind == "actual" else theme["forecast_color"]
-                    for kind in series.value_kind
-                ]
-                ax.bar([x + offset for x in positions], _safe_values(series.values), width, label=series.name, color=bar_colors)
+                has_actual = any(kind == "actual" for kind in series.value_kind)
+                # 序列内无 actual 时用序列主色；预测属性用 hatch/描边表达，不再整体变灰。
+                base_color = colors[index % len(colors)]
+                bar_colors = []
+                hatches = []
+                edge_colors = []
+                for kind in series.value_kind:
+                    if not has_actual:
+                        bar_colors.append(base_color)
+                    elif kind == "actual":
+                        bar_colors.append(base_color)
+                    else:
+                        bar_colors.append(theme["forecast_color"])
+                    hatches.append("" if kind == "actual" else "///")
+                    edge_colors.append(base_color if kind != "actual" else "none")
+                if horizontal:
+                    bars = ax.barh([x + offset for x in positions], _safe_values(series.values),
+                                   width, label=series.name if len(chart.series) > 1 else None,
+                                   color=bar_colors, hatch=hatches, edgecolor=edge_colors)
+                    _annotate_bar_values(bars, series.values, chart.unit, chart.visual.number_format,
+                                         horizontal=True, series_name=series.name)
+                else:
+                    bars = ax.bar([x + offset for x in positions], _safe_values(series.values),
+                                  width, label=series.name if len(chart.series) > 1 else None,
+                                  color=bar_colors, hatch=hatches, edgecolor=edge_colors)
+                    _annotate_bar_values(bars, series.values, chart.unit, chart.visual.number_format,
+                                         horizontal=False, series_name=series.name)
+
+        elif chart.type == "range_bar":
+            # lower / upper 两个 series 表达区间上下限。
+            lower = _safe_values(chart.series[0].values)
+            upper = _safe_values(chart.series[1].values)
+            widths = [u - l if not (math.isnan(l) or math.isnan(u)) else 0.0 for l, u in zip(lower, upper)]
+            base_color = colors[0]
+            if horizontal:
+                ax.barh(positions, widths, left=lower, color=base_color, alpha=0.55, height=0.5)
+                for i, (l, u) in enumerate(zip(lower, upper)):
+                    if not (math.isnan(l) or math.isnan(u)):
+                        ax.plot([l, u], [positions[i], positions[i]], marker="|", color=base_color, linewidth=1.5)
+                        if chart.visual.show_values:
+                            ax.text(l, positions[i] + 0.2, _format_value_label(l, chart.unit, chart.visual.number_format),
+                                    ha="left", va="bottom", fontsize=7.5)
+                            ax.text(u, positions[i] + 0.2, _format_value_label(u, chart.unit, chart.visual.number_format),
+                                    ha="right", va="bottom", fontsize=7.5)
+            else:
+                ax.bar(positions, widths, bottom=lower, color=base_color, alpha=0.55, width=0.5)
+                for i, (l, u) in enumerate(zip(lower, upper)):
+                    if not (math.isnan(l) or math.isnan(u)):
+                        if chart.visual.show_values:
+                            ax.text(positions[i], l, _format_value_label(l, chart.unit, chart.visual.number_format),
+                                    ha="center", va="bottom", fontsize=7.5)
+                            ax.text(positions[i], u, _format_value_label(u, chart.unit, chart.visual.number_format),
+                                    ha="center", va="bottom", fontsize=7.5)
 
         elif chart.type == "stacked_bar":
             bottoms = [0.0] * len(positions)
@@ -288,12 +576,35 @@ def _draw_matplotlib(chart: ChartSpec, output_dir: Path, theme: dict[str, Any]) 
         else:
             raise ValueError(f"非确定性图表类型：{chart.type}")
 
-        ax.set_xticks(positions, chart.labels)
-        ax.tick_params(axis="x", rotation=0 if len(chart.labels) <= 8 else 30, labelsize=8.5)
-        ax.set_ylabel(chart.unit)
+        _draw_reference_lines_and_bands()
+        for callout in chart.callouts:
+            if callout.label in chart.labels:
+                idx = chart.labels.index(callout.label)
+                # callout 应标注在该点的数值处，不是类别索引。
+                value = _callout_anchor_value(chart, idx)
+                if horizontal:
+                    ax.annotate(callout.text, (value, positions[idx]), xytext=(4, 4),
+                                textcoords="offset points", fontsize=8, color=colors[1])
+                else:
+                    ax.annotate(callout.text, (positions[idx], value), xytext=(4, 4),
+                                textcoords="offset points", fontsize=8, color=colors[1])
+
+        if horizontal:
+            ax.set_yticks(positions, chart.labels)
+            ax.tick_params(axis="y", labelsize=8.5)
+        else:
+            ax.set_xticks(positions, chart.labels)
+            ax.tick_params(axis="x", rotation=0 if len(chart.labels) <= 8 else 30, labelsize=8.5)
         ax.set_title(chart.title, loc="left", fontsize=13, fontweight="bold", pad=12, color=theme["text_color"])
-        if chart.type not in {"combo", "scatter", "heatmap", "waterfall"} and len(chart.series) > 1:
-            ax.legend(frameon=False, loc="best", ncols=min(len(chart.series), 3))
+        # 单位放在标题下方独立一行（x 对齐标题左缘），不再放 y=1.02 与标题下沿重叠。
+        ax.text(0, 1.0, f"单位：{chart.unit}", transform=ax.transAxes,
+                ha="left", va="top", fontsize=8.5, color=theme["muted_color"],
+                linespacing=1.6)
+        if chart.type not in {"combo", "scatter", "heatmap", "waterfall", "range_bar"} and len(chart.series) > 1:
+            legend_pos = "best" if chart.visual.legend_position == "auto" else chart.visual.legend_position
+            if chart.visual.legend_position != "none":
+                ax.legend(frameon=False, loc=legend_pos if legend_pos != "right" else "best",
+                          ncols=min(len(chart.series), 3))
         for spine in ("top", "right"):
             ax.spines[spine].set_visible(False)
         fig.tight_layout()
@@ -308,6 +619,39 @@ def _draw_matplotlib(chart: ChartSpec, output_dir: Path, theme: dict[str, Any]) 
         fig.savefig(png_path, format="png", dpi=theme["dpi"], bbox_inches="tight")
         plt.close(fig)
     return ChartAsset(chart.id, svg_path, pdf_path, png_path)
+
+
+def _callout_anchor_value(chart: ChartSpec, index: int) -> float:
+    """callout 绑定 label 时，取其数值锚点（该 label 上各序列的最大值，忽略 None）。"""
+    candidates: list[float] = []
+    for series in chart.series:
+        if index < len(series.values):
+            value = series.values[index]
+            if value is not None:
+                candidates.append(float(value))
+    return max(candidates) if candidates else 0.0
+
+
+def _annotate_line_values(ax, positions, values, unit, number_format) -> None:
+    """标注 line 图首末点与极值点，避免为每个点添加噪声。"""
+    import matplotlib
+    import math as _math
+
+    finite = [(i, v) for i, v in enumerate(values) if not _math.isnan(v)]
+    if not finite:
+        return
+    first_i, first_v = finite[0]
+    last_i, last_v = finite[-1]
+    peak_i, peak_v = max(finite, key=lambda iv: iv[1])
+    trough_i, trough_v = min(finite, key=lambda iv: iv[1])
+    annotate = {first_i, last_i, peak_i, trough_i}
+    for i in annotate:
+        v = values[i]
+        if _math.isnan(v):
+            continue
+        ax.annotate(_format_value_label(float(v), unit, number_format),
+                    (positions[i], v), xytext=(0, 5), textcoords="offset points",
+                    ha="center", fontsize=7.5)
 
 
 def _walk_spec(value: Any, *, allowed_fields: set[str]) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from ..pipeline_errors import DETERMINISTIC_CONTENT_HINT, DeterministicContentError
 from .enums import SourceStatus, VerificationStatus
 from .models import EvidenceRecord, SourceAsset
 from .repository import SQLiteRepository
@@ -13,6 +14,11 @@ _STANDARD_CITATION_RE = re.compile(
     r"\[src:(?P<source_id>[^\]:,\s]+):v(?P<version>\d+),\s*(?P<locator>[^\]]+)\]"
 )
 _BARE_URL_RE = re.compile(r"https?://[^\s<>\])]+")
+#: 独立方括号的短引用 `[ev=ev_xxx]`。evidence_id 形如 ``ev_`` + 32 位十六进制；
+#: Agent4 偶发截断末尾（如 ``ev_...5469cc53`` 抄成 ``ev_...5469cc``），因此这里
+#: 匹配 ``ev_`` 后任意字母/数字/下划线（含截断与非十六进制笔误），由下方
+#: ``expand_evidence_citations`` 精确反查——未知/截断一律报错而非静默解析或跳过。
+_SHORT_EVIDENCE_CITATION_RE = re.compile(r"\[ev=(ev_[A-Za-z0-9_]+)\]")
 
 
 @dataclass(frozen=True)
@@ -71,6 +77,60 @@ def extract_standard_citations(text: str) -> list[StandardCitation]:
         )
         for match in _STANDARD_CITATION_RE.finditer(text)
     ]
+
+
+def _resolve_evidence_id(
+    raw_evidence_id: str, evidence_lookup: dict[str, EvidenceRecord]
+) -> EvidenceRecord:
+    """把 ``[ev=...]`` 里的 id 精确解析到 EvidenceRecord，非精确匹配一律报错。
+
+    Agent4 只写 `[ev=ev_xxx]`，`ev_xxx` 必须是证据目录里逐字复制的完整
+    ``evidence_id``（``ev_`` + 32 位十六进制）。截断、改写或未知 id 都是确定性
+    内容错误——绝不静默前缀解析成某条证据，也绝不静默跳过。之所以不加"唯一前缀
+    自愈"，是因为 P2 的整个目标就是消灭手抄漂移：再对截断 id 做前缀猜测，等于把
+    漂移从 `[src:...]` 四段搬到了 `ev_` 一段，仍可能解析到错误证据。
+    """
+    evidence = evidence_lookup.get(raw_evidence_id)
+    if evidence is not None:
+        return evidence
+    raise DeterministicContentError(
+        f"未知 evidence_id：{raw_evidence_id}（{DETERMINISTIC_CONTENT_HINT}）"
+    )
+
+
+def expand_evidence_citations(
+    text: str, repository: SQLiteRepository, project_id: str
+) -> str:
+    """把 Agent4 只写的 ``[ev=ev_xxx]`` 用 ``render_citation()`` 展开为标准引用。
+
+    Analyst 只需在结论后写 ``[事实] [ev=ev_xxx]`` 两个独立方括号，引用文本由
+    程序从 EvidenceRecord 确定性展开——不再要求模型手抄 source_id / 版本 / chunk /
+    locator 四段，从根上消除手抄漂移。未知/截断 ev id 抛 ``DeterministicContentError``。
+    """
+    matches = list(_SHORT_EVIDENCE_CITATION_RE.finditer(text))
+    if not matches:
+        return text
+
+    evidence_lookup = {
+        item.evidence_id: item for item in repository.list_evidence(project_id)
+    }
+    source_lookup = {
+        item.source_id: item
+        for item in repository.list_sources(project_id, include_superseded=True)
+    }
+
+    def replacement(match: re.Match[str]) -> str:
+        raw_id = match.group(1)
+        evidence = _resolve_evidence_id(raw_id, evidence_lookup)
+        source = source_lookup.get(evidence.source_id)
+        if source is None:
+            raise DeterministicContentError(
+                f"证据 {evidence.evidence_id} 的来源 {evidence.source_id} 不存在"
+                f"（{DETERMINISTIC_CONTENT_HINT}）"
+            )
+        return render_citation(evidence, source)
+
+    return _SHORT_EVIDENCE_CITATION_RE.sub(replacement, text)
 
 
 def audit_analysis_citations(

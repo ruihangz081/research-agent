@@ -24,7 +24,13 @@ class ClaimsError(RuntimeError):
     """`04_claims.json` 缺失、损坏或未通过确定性门禁。"""
 
 
-_CITATION_RE = re.compile(r"\[src:[^\]]+\]")
+#: 引用标记：既匹配标准 ``[src:...]``，也匹配 Agent4 偶发把标注与引用合并进同一
+#: 括号的 ``[事实｜src:...]`` 形式（拆分前）。若不兼容，融合式引用无法被剥除，
+#: 会导致台账结论文本与正文归一无所产生的差异被误判为「结论不在正文中」。
+_CITATION_RE = re.compile(
+    r"\[(?:事实|已验证事实|推导|计算|判断|假设|证据不足)[｜|]src:[^\]]+\]"
+    r"|\[src:[^\]]+\]"
+)
 _ANNOTATION_RE = re.compile(r"\[[^\[\]]*(?:置信度|判断|推导|已验证事实|证据不足)[^\[\]]*\]")
 _EMPHASIS_CHARS = str.maketrans({"*": None, "_": None, "`": None})
 _WHITESPACE_RE = re.compile(r"\s+")

@@ -1,11 +1,14 @@
 """Pandoc-based HTML/LaTeX/PDF delivery for brokerage-style reports."""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import os
 import re
 import shutil
 import subprocess
+import unicodedata
 from datetime import date
 from html import escape
 from pathlib import Path
@@ -15,6 +18,7 @@ from urllib.parse import quote
 from . import config
 from .agent_skills import load_project_skill
 from .llm import LLMClient
+from .pipeline_errors import DETERMINISTIC_CONTENT_HINT, DeterministicContentError
 from .report_charts import (
     ChartAsset,
     ChartManifest,
@@ -24,6 +28,8 @@ from .report_charts import (
     render_chart_manifest,
     SUPPORTED_CHART_TYPES,
 )
+
+logger = logging.getLogger(__name__)
 
 _PLACEHOLDER = re.compile(
     r"^[ \t]*\{\{chart:([a-z0-9][a-z0-9_-]{0,63})\}\}[ \t]*$",
@@ -43,7 +49,7 @@ _INLINE_CODE = re.compile(r"`([^`\r\n]+)`")
 #: 实测一份报告里有 42 处置信度标注和 8 处推导标注混在正文中。
 #: 置信度信息本身有价值，但应该以可读形式呈现，而不是内部标签。
 _ANALYSIS_ANNOTATION = re.compile(
-    r"[ \t]*\[(判断|计算|推导|已验证事实|证据不足)"
+    r"[ \t]*\[(判断|计算|推导|已验证事实|事实|假设|证据不足)"
     r"(?:[｜|][^\[\]\r\n]*)?\][ \t]*"
 )
 _LOW_CONFIDENCE_HINT = re.compile(r"低置信度")
@@ -82,6 +88,21 @@ _PLAIN_TEXT_REPLACEMENTS = {
     "③": "(3)",
     "④": "(4)",
     "⑤": "(5)",
+    "⑥": "(6)",
+    "⑦": "(7)",
+    "⑧": "(8)",
+    "⑨": "(9)",
+    "⑩": "(10)",
+    "⁰": "^0",
+    "¹": "^1",
+    "²": "^2",
+    "³": "^3",
+    "⁴": "^4",
+    "⁵": "^5",
+    "⁶": "^6",
+    "⁷": "^7",
+    "⁸": "^8",
+    "⁹": "^9",
     "‑": "-",
     "–": "-",
     "—": "-",
@@ -180,6 +201,71 @@ def render_report_citations_for_latex(markdown: str) -> str:
         citation_markup,
         _INLINE_CODE.sub(inline_code, markdown),
     )
+
+
+#: 融合式引用：标注与引用被 Agent4 合并写进同一括号。拆分为两个独立 token。
+#: 第二段同时覆盖旧格式 ``[事实｜src:src_...]`` 与 P2 新格式 ``[事实｜ev=ev_...]``。
+_MERGED_CITATION_RE = re.compile(
+    r"\[(事实|已验证事实|推导|计算|判断|假设|证据不足)[｜|]((?:(?:src:)?src_|ev=ev_)[A-Za-z0-9_-]+[^\]\r\n]*?)\]"
+)
+#: 归一化后仍残留的融合式引用（方括号内出现 ｜ev= 或 ｜src:）。命中即说明有标注
+#: 种类不在白名单内或引用写法异常，必须 fail-closed，不能静默丢引用。刻意限定在
+#: 方括号内，避免误伤表格/代码里的普通竖线。
+_LEFTOVER_MERGED_RE = re.compile(r"\[[^\]\r\n]*[｜|](?:ev=|src:)")
+
+
+def count_merged_citations(markdown: str) -> int:
+    """统计融合式 ``[事实｜src:...]`` 引用的数量（用于记录归一化是否发生）。"""
+    return len(_MERGED_CITATION_RE.findall(markdown))
+
+
+def normalize_merged_citations(markdown: str) -> str:
+    """拆分 Agent4 把标注与引用合并写进同一括号的 ``[事实｜src:...]`` 形式。
+
+    prompt 要求的标准格式是 `[事实] [src:...]`（分开两个括号），但 Agent4 偶发会把
+    两者合并成 `[事实｜src:...]`。合并后的引用因为不再以 ``[src:`` 开头，无法被
+    ``_REPORT_CITATION`` 识别，导致整段内部 ID 原样泄入 PDF。这里把合并括号拆回
+    两个独立 token：标注交给 ``strip_analysis_annotations`` 移除，引用交给
+    ``render_report_citations_*`` 压缩。
+    """
+    return _MERGED_CITATION_RE.sub(
+        lambda m: f"[{m.group(1)}] [{m.group(2).strip(' ,')}]",
+        markdown,
+    )
+
+
+def canonicalize_report_text(
+    text: str,
+    *,
+    repository: Any | None = None,
+    project_id: str | None = None,
+) -> str:
+    """把报告文本归一化到机器可审计的标准形式（单一入口）。
+
+    依次执行：
+    1. ``normalize_merged_citations`` —— 把 ``[事实｜src:...]`` 拆回 ``[事实] [src:...]``；
+    2. ``expand_evidence_citations`` —— 把 ``[ev=ev_xxx]`` 用 ``render_citation()``
+       展开为完整标准引用（传入 repository/project_id 时）。
+
+    三处引用审计（orchestrator、Agent5、claims 归一化）与两个 ``build_*`` 都统一
+    走这里，保证审计看到的引用与交付渲染看到的引用一致。纯文本路径（不带
+    repository）只做第一步，供 Web 预览等无需反查证据库的场景使用。
+    """
+    normalized = normalize_merged_citations(text)
+    if repository is not None and project_id is not None:
+        from .sources.citations import expand_evidence_citations
+
+        normalized = expand_evidence_citations(normalized, repository, project_id)
+    if _LEFTOVER_MERGED_RE.search(normalized):
+        # 归一化后仍有 [..｜ev=..] 或 [..｜src:..] 残留：标注种类不在拆分白名单内，
+        # 或引用写法异常。若静默放行，这些引用会被 strip_analysis_annotations 整段
+        # 吞掉——fail-closed 阻断，绝不静默丢引用。
+        raise DeterministicContentError(
+            "引用归一化后仍残留融合式引用（｜ev= 或 ｜src:）："
+            f"{_LEFTOVER_MERGED_RE.search(normalized).group(0)!r}"
+            f"（{DETERMINISTIC_CONTENT_HINT}）"
+        )
+    return normalized
 
 
 def strip_analysis_annotations(markdown: str) -> str:
@@ -320,6 +406,136 @@ def normalize_markdown_for_pdf(markdown: str) -> str:
     for source, replacement in _PLAIN_TEXT_REPLACEMENTS.items():
         normalized = normalized.replace(source, replacement)
     return normalized
+
+
+# ═════════════════════════════════════════════════════════════════
+# 确定性字形覆盖检查（白名单，取代逐字枚举黑名单）
+# ═════════════════════════════════════════════════════════════════
+
+#: 判断式：码点 > 0x7F，且不属于 CJK 相关区段，且不在西文 lmroman10 的 cmap 里。
+#: 这样的字符要么命中替换表被替换，要么抛错列出 U+XXXX 与字符名。
+#:
+#: 注意：刻意**不**纳入 3200-33FF（Enclosed CJK / CJK Compatibility）——它们装的是
+#: ㈠㈡㊙㊗、㎡ ㎢ ㎏ ㏄ 这类非表意符号，FandolSong 并不覆盖（实测 ㎡/⑪ 都不在 cmap），
+#: 归入"CJK 区段"会把它们静默漏成丢字。真正的表意区段是 3400-9FFF 与扩展平面。
+_CJK_RANGES: tuple[tuple[int, int], ...] = (
+    (0x2E80, 0x2EFF),  # CJK Radicals Supplement
+    (0x2F00, 0x2FDF),  # Kangxi Radicals
+    (0x2FF0, 0x2FFF),  # Ideographic Description Characters
+    (0x3000, 0x303F),  # CJK Symbols and Punctuation（、。「」《》等，Fandol 覆盖）
+    (0x3040, 0x30FF),  # Hiragana / Katakana
+    (0x3100, 0x312F),  # Bopomofo
+    (0x31A0, 0x31BF),  # Bopomofo Extended
+    (0x31C0, 0x31EF),  # CJK Strokes
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+    (0xFE30, 0xFE4F),  # CJK Compatibility Forms（竖排括号等，Fandol 覆盖）
+    (0xFF00, 0xFFEF),  # Halfwidth and Fullwidth Forms（，、：（）｜等）
+    (0x20000, 0x2FA1F),  # CJK Extensions B+
+)
+
+
+def _is_cjk(codepoint: int) -> bool:
+    return any(start <= codepoint <= end for start, end in _CJK_RANGES)
+
+
+#: 西文字体默认 lmroman10-regular.otf；找不到时退回 ``fontTools`` 的定位接口。
+_LATIN_FONT_FALLBACK = "lmroman10-regular.otf"
+
+
+def _kpsewhich(font_name: str) -> str | None:
+    """用 ``kpsewhich`` 取字体绝对路径；失败返回 None（不阻断渲染）。"""
+    try:
+        proc = subprocess.run(
+            ["kpsewhich", font_name],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    path = proc.stdout.strip()
+    return path if path and Path(path).is_file() else None
+
+
+_cmap_cache: dict[str, frozenset[int]] = {}
+
+
+def _load_cmap(font_path: str) -> frozenset[int]:
+    """读取字体 cmap，按路径缓存（frozenset 便于命中测试）。"""
+    cached = _cmap_cache.get(font_path)
+    if cached is not None:
+        return cached
+    try:
+        from fontTools.ttLib import TTFont
+    except ImportError as exc:  # pragma: no cover - fontTools 是固定依赖
+        raise RuntimeError("缺少 fontTools，无法做字形覆盖检查") from exc
+    font = TTFont(font_path, lazy=True, fontNumber=0)
+    codepoints: set[int] = set()
+    try:
+        for table in font["cmap"].tables:
+            codepoints.update(table.cmap.keys())
+    finally:
+        font.close()
+    result = frozenset(codepoints)
+    _cmap_cache[font_path] = result
+    return result
+
+
+def _latin_cmap() -> frozenset[int] | None:
+    """取西文字体 cmap；找不到字体时返回 None（表示字体不可用，检查应跳过）。
+
+    无 TeX 环境的机器根本不会走 PDF 编译（``compile_report_pdf`` 在无引擎时直接
+    ``return None``），此时若返回空集会把 ×−÷± 这类西文本来就覆盖的字符误判为
+    越界、误阻断交付。因此"字体不可用"与"字体存在但无该码点"必须区分开。
+    """
+    path = _kpsewhich(_LATIN_FONT_FALLBACK)
+    if path is None:
+        return None
+    return _load_cmap(path)
+
+
+def check_pdf_glyph_coverage(markdown: str) -> None:
+    """替换表之外的非 CJK、非西文 cmap 字符一律抛 ``DeterministicContentError``。
+
+    与 ``normalize_markdown_for_pdf`` 组合使用：先跑替换表（把已知的 ①⑥⁴≈≥↔ 等
+    换成 ASCII），再对剩余文本做确定性判定。命中替换表的字符已经被换掉，不会再
+    出现在这里；漏网的非 CJK 特殊符号（如 ⑪、㎡）会触发报错，错误信息列出每个
+    字符的 ``U+XXXX`` 与 ``unicodedata`` 名字，供修正上游产物而不是静默丢字。
+
+    西文字体不可用（``_latin_cmap()`` 返回 None）时跳过检查并告警——该机器本就不
+    会编译 PDF，用空 cmap 强行判定只会误阻断交付。
+    """
+    latin = _latin_cmap()
+    if latin is None:
+        logger.warning(
+            "跳过字形覆盖检查：找不到西文字体 %s（无 TeX 环境，不会编译 PDF）",
+            _LATIN_FONT_FALLBACK,
+        )
+        return
+    offenders: dict[str, int] = {}
+    for char in markdown:
+        codepoint = ord(char)
+        if codepoint <= 0x7F:
+            continue
+        if _is_cjk(codepoint):
+            continue
+        if codepoint in latin:
+            continue
+        offenders[char] = offenders.get(char, 0) + 1
+    if not offenders:
+        return
+    details = ", ".join(
+        f"U+{ord(char):04X} {unicodedata.name(char, '<未知字符>')} ×{count}"
+        for char, count in sorted(offenders.items(), key=lambda item: -item[1])
+    )
+    raise DeterministicContentError(
+        f"PDF 模板字体覆盖之外的字形：{details}"
+        f"（{DETERMINISTIC_CONTENT_HINT}）"
+    )
 
 
 def make_latex_source_ids_breakable(tex: str) -> str:
@@ -521,6 +737,7 @@ def build_report_html(
     prepared = replace_chart_placeholders(
         _ensure_disclaimer(markdown), manifest, assets, target="html", project_id=project_id
     )
+    prepared = canonicalize_report_text(prepared)
     prepared = render_report_citations_for_html(prepared, project_id)
     prepared = strip_analysis_annotations(prepared)
     proc = _run(
@@ -556,22 +773,35 @@ def build_report_latex(
     if not template.is_file() or not style.is_file() or not table_filter.is_file():
         raise RuntimeError("券商研报 LaTeX 模板资产不完整")
     shutil.copyfile(style, project_dir / style.name)
+    # 颜色单一来源：brokerage-report.sty 现在 \input{brokerage-tokens.tex}，本步
+    # 从 design-tokens.json 生成该文件并拷贝到项目目录，颜色命令名保持不变。
+    from .design_tokens import latex_tokens_tex
+
+    (project_dir / "brokerage-tokens.tex").write_text(
+        latex_tokens_tex(), encoding="utf-8"
+    )
+    # 合并式引用（[事实｜src:...]）必须先拆回标准 [src:...] 形式，否则
+    # citation_source_order 与 render_report_citations_for_latex 都无法识别，
+    # 既漏进图例编号，又把整段内部 ID 泄入 PDF。
+    markdown = canonicalize_report_text(markdown)
     # 图例必须在引用被压成 [N] 之前算好顺序，否则拿不到 source_id。
     # HTML 路径不需要：那里的上标是指向材料中心的可点击链接。
     legend = build_source_legend_markdown(
         project_dir.name, citation_source_order(markdown)
     )
-    prepared = normalize_heading_numbers_for_pdf(
-        normalize_markdown_for_pdf(
-            replace_chart_placeholders(
-                # 图例放在免责声明之前：免责声明按惯例是报告最后一节。
-                _ensure_disclaimer(markdown.rstrip() + legend),
-                manifest,
-                assets,
-                target="latex",
-            )
+    pdf_normalized = normalize_markdown_for_pdf(
+        replace_chart_placeholders(
+            # 图例放在免责声明之前：免责声明按惯例是报告最后一节。
+            _ensure_disclaimer(markdown.rstrip() + legend),
+            manifest,
+            assets,
+            target="latex",
         )
     )
+    # 替换表之外的非 CJK、非西文 cmap 字符必须在此阻断，而不是让 XeLaTeX 丢字
+    # 后再由 compile_report_pdf 阶段级失败——那会白烧整条渲染链。
+    check_pdf_glyph_coverage(pdf_normalized)
+    prepared = normalize_heading_numbers_for_pdf(pdf_normalized)
     prepared = render_report_citations_for_latex(prepared)
     prepared = strip_analysis_annotations(prepared)
     prepared = abbreviate_internal_ids_for_pdf(prepared)
@@ -761,7 +991,38 @@ async def generate_report_artifacts(
                 await prepare_llm_fallbacks(manifest, project_dir=project_dir, client=active_client)
     charts_dir = project_dir / "05_charts"
     assets = render_chart_manifest(manifest, charts_dir)
+    # P1：图表数值证据溯源门禁。有 04_claims.json 的项目走严格路径（必需图失败
+    # 阻断、可选图降级）；无 claims 的历史项目走 v1 兼容路径（不做 claim 反查，
+    # 仅回填 publisher、不阻断）。
+    from .chart_provenance import apply_provenance_gate, validate_chart_provenance, write_provenance_report
+    from .sources.runtime import get_service as _get_service
+
+    repository = _get_service(config.SOURCE_DATA_DIR).repository
+    claims_path = project_dir / config.FILE_CLAIMS
+    strict = manifest.version == 2
+    provenance_report = validate_chart_provenance(
+        manifest,
+        project_dir=project_dir,
+        repository=repository,
+        analysis_path=project_dir / config.FILE_ANALYSIS,
+        claims_path=claims_path if strict else None,
+    )
+    write_provenance_report(provenance_report, project_dir / "05_chart_provenance.json")
+    fallback_ids = apply_provenance_gate(
+        provenance_report, manifest, strict=strict
+    )
+    # 可选图降级：移除其渲染资产，让 replace_chart_placeholders 走 _fallback_table。
+    for chart_id in fallback_ids:
+        assets.pop(chart_id, None)
     markdown = final_report_path.read_text(encoding="utf-8")
+    # 交付渲染前统一归一化：拆分 [事实｜src:...]，并把 Agent4 只写的 [ev=ev_xxx]
+    # 展开为标准引用。审计（orchestrator / Agent5）与渲染必须看到同一份文本，否则
+    # 新格式下 ev=ev_ / chunk=chk 会原样泄入 PDF 与 HTML。
+    markdown = canonicalize_report_text(
+        markdown,
+        repository=repository,
+        project_id=project_dir.name,
+    )
     html_path = build_report_html(
         topic=topic,
         project_id=project_dir.name,
@@ -770,15 +1031,38 @@ async def generate_report_artifacts(
         manifest=manifest,
         assets=assets,
     )
-    tex_path = build_report_latex(
-        topic=topic,
-        project_dir=project_dir,
-        markdown=markdown,
-        manifest=manifest,
-        assets=assets,
-    )
-    pdf_path = compile_report_pdf(tex_path)
-    qa = inspect_pdf(pdf_path, topic=topic) if pdf_path else None
+    if config.REPORT_PDF_ENGINE == "chrome":
+        # Chrome 打印管线：HTML 与图表仍由上面的 report_formatting 链路产出，
+        # 这里只替换「HTML → PDF」这一段。不生成 .tex，tex_path 置 None。
+        # generate_print_pdf 用 Playwright 同步 API，必须脱离 asyncio 事件循环
+        # 在独立线程跑，否则 sync_playwright 会拒绝在事件循环内启动。
+        from .report_print import generate_print_pdf
+
+        print_result = await asyncio.to_thread(
+            generate_print_pdf, project_dir=project_dir, html_path=html_path
+        )
+        pdf_path = print_result.pdf_path
+        tex_path = None
+        # Chrome 封面标题取自 HTML 的 h1（报告自身标题），不是 topic；QA 的标题
+        # 检查要用同一口径，否则「topic 调研报告」与 h1 对不上会误判 PDF 缺标题。
+        html_text = html_path.read_text(encoding="utf-8")
+        title_match = re.search(r"<h1[^>]*>(.*?)</h1>", html_text, re.S)
+        qa_topic = (
+            re.sub(r"<[^>]+>", "", title_match.group(1)).strip()
+            if title_match
+            else topic
+        )
+    else:
+        tex_path = build_report_latex(
+            topic=topic,
+            project_dir=project_dir,
+            markdown=markdown,
+            manifest=manifest,
+            assets=assets,
+        )
+        pdf_path = compile_report_pdf(tex_path)
+        qa_topic = topic
+    qa = inspect_pdf(pdf_path, topic=qa_topic) if pdf_path else None
     return {
         "manifest_path": manifest_path,
         "charts_dir": charts_dir,
@@ -786,6 +1070,7 @@ async def generate_report_artifacts(
         "tex_path": tex_path,
         "pdf_path": pdf_path,
         "engine": find_latex_engine(),
+        "engine_used": config.REPORT_PDF_ENGINE,
         "pandoc": find_pandoc(),
         "qa": qa,
     }

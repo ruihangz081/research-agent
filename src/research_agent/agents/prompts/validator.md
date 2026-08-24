@@ -179,6 +179,7 @@
 - `excerpt` 必须逐字复制 `ReadProjectSource.text` 中的连续原文，`locator_json` 必须原样使用同一次读取结果中的一个 locator，禁止自行改写
 - 没有成功写入 `EvidenceRecord` 的事实不得计入已覆盖，也不得令 `converged=true`
 - `completed` 任务必须填写真实 `completed_evidence_ids`；程序会反查来源、版本、chunk、原文、问题、等级和时期
+- `completed_evidence_ids` 里的每个 `ev_...` 都必须**逐字完整复制**工具返回的 `evidence_id`（`ev_` + 32 位十六进制），严禁截断末尾字符或改写；否则程序按未知证据拒绝并阻断验证
 - 不得自行把任务设为 `waived`；豁免必须来自显式人工操作
 - `gap_list`、`need_rework_topics`、`next_round_focus` 或未解决冲突非空时，不得省略对应 `tasks`
 - 冲突证据必须分别记录为 `supported` 或 `contradicted`；未解决冲突不得收敛

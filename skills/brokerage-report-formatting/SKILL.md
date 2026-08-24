@@ -26,7 +26,7 @@ Write a JSON manifest with this shape:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "charts": [
     {
       "id": "market_growth",
@@ -43,13 +43,18 @@ Write a JSON manifest with this shape:
           "values": [100, 118, 136],
           "value_kind": ["actual", "actual", "forecast"]
         }
-      ]
+      ],
+      "provenance": {
+        "claim_ids": ["c_q1_market_size"]
+      }
     }
   ]
 }
 ```
 
-Use only numeric values already present in verified input. Supported deterministic chart types are `line`, `bar`, `stacked_bar`, `combo`, `scatter`, `heatmap`, and `waterfall`. Use a descriptive unsupported type only when these cannot express a necessary chart; the renderer will request a constrained Vega-Lite fallback.
+`provenance.claim_ids` 是图表事实的待核验线索：`claim_id` 取自 `04_claims.json`，每条对应分析正文里的一句结论。程序会逐条反查 claim 是否存在、是否仍在 Agent4 正文中、是否关联当前 `SUPPORTED` EvidenceRecord，并让图中每个数值反向匹配到 claim 文本或其证据——图上数值无法在候选 claim/证据中匹配就会阻断交付。只列真正承载该图数值的 claim（通常是 `fact` / `derivation`）；零证据的 `judgment` 不承载数值，程序会将其从候选剔除。不要把 `claim_ids` 当成可信证明，也不要在清单里自报 `evidence_ids` 或逐点映射。
+
+Use only numeric values already present in verified input. Supported deterministic chart types are `line`, `bar`, `stacked_bar`, `combo`, `scatter`, `heatmap`, `waterfall`, `horizontal_bar`, and `range_bar`. Use a descriptive unsupported type only when these cannot express a necessary chart; the renderer will request a constrained Vega-Lite fallback.
 
 ## Boundaries
 

@@ -15,7 +15,9 @@ from .. import config
 from ..agent_loop import AgentOptions, run_agent
 from ..agent_skills import load_project_skill
 from ..llm import LLMClient
+from ..pipeline_errors import DETERMINISTIC_CONTENT_HINT, DeterministicContentError
 from ..report_charts import ChartManifest, load_chart_manifest
+from ..report_formatting import canonicalize_report_text
 from ..report_layout import generate_typeset_artifacts
 from ..research_plan import ResearchPlanError, require_plan
 from ..sources.runtime import get_service
@@ -72,15 +74,25 @@ def _audit_final_report_citations(
     report_path: Path,
     supported: list[EvidenceRecord],
     sources: dict[str, SourceAsset],
+    *,
+    repository=None,
+    project_id: str | None = None,
 ) -> None:
-    valid, errors = validate_report_text_citations(
-        report_path.read_text(encoding="utf-8"), supported, sources
+    # 终稿引用审计必须先归一化：拆分 [事实｜src:...]，并（若传了证据库）把 Agent4
+    # 只写的 [ev=ev_xxx] 展开为标准引用——否则会被误判为「非精确 EvidenceRecord」。
+    report_text = canonicalize_report_text(
+        report_path.read_text(encoding="utf-8"),
+        repository=repository,
+        project_id=project_id,
     )
+    valid, errors = validate_report_text_citations(report_text, supported, sources)
     if not valid:
         details = "; ".join(errors[:10])
         if len(errors) > 10:
             details += f"; 另有 {len(errors) - 10} 项"
-        raise RuntimeError(f"Agent5 引用审计失败：{details}")
+        raise DeterministicContentError(
+            f"Agent5 引用审计失败：{details}（{DETERMINISTIC_CONTENT_HINT}）"
+        )
 
 
 def _audit_final_report_claims(
@@ -174,7 +186,11 @@ def _can_reuse_chart_manifest(
     chart_manifest_path: Path,
     analysis_path: Path,
 ) -> bool:
-    """Reuse only a current manifest whose charts have deterministic anchors."""
+    """Reuse only a current manifest whose charts have deterministic anchors.
+
+    复用检查必须真正校验每个锚点在正文中唯一匹配——坏锚点会跳过 LLM 却在
+    ``_compose_final_report_from_analysis`` 报错，浪费整轮。
+    """
     if not (
         chart_manifest_path.is_file()
         and chart_manifest_path.stat().st_mtime >= analysis_path.stat().st_mtime
@@ -184,9 +200,43 @@ def _can_reuse_chart_manifest(
         manifest = load_chart_manifest(
             chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS
         )
-    except (ValueError, OSError):
+    except (ValueError, OSError, DeterministicContentError):
         return False
-    return all(chart.placement_after for chart in manifest.charts)
+    try:
+        analysis = analysis_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    lines = analysis.splitlines(keepends=True)
+    for chart in manifest.charts:
+        if not chart.placement_after:
+            return False
+        matches = [
+            line for line in lines if line.rstrip("\r\n") == chart.placement_after
+        ]
+        if len(matches) != 1:
+            return False
+    return True
+
+
+def _validate_placement_anchors(
+    analysis_path: Path,
+    manifest: ChartManifest,
+) -> None:
+    """锚点匹配数≠1 时抛 DeterministicContentError，不落进 except Exception 重试。"""
+    analysis = analysis_path.read_text(encoding="utf-8")
+    lines = analysis.splitlines(keepends=True)
+    for chart in manifest.charts:
+        anchor = chart.placement_after
+        if not anchor:
+            raise DeterministicContentError(
+                f"chart {chart.id} 缺少 placement_after（{DETERMINISTIC_CONTENT_HINT}）"
+            )
+        matches = [line for line in lines if line.rstrip("\r\n") == anchor]
+        if len(matches) != 1:
+            raise DeterministicContentError(
+                f"chart {chart.id} 的 placement_after 必须逐字匹配 Agent4 中唯一一行："
+                f"当前匹配 {len(matches)} 行（{DETERMINISTIC_CONTENT_HINT}）"
+            )
 
 
 def _compose_final_report_from_analysis(
@@ -202,16 +252,18 @@ def _compose_final_report_from_analysis(
     for chart in manifest.charts:
         anchor = chart.placement_after
         if not anchor:
-            raise ValueError(f"chart {chart.id} 缺少 placement_after")
+            raise DeterministicContentError(
+                f"chart {chart.id} 缺少 placement_after（{DETERMINISTIC_CONTENT_HINT}）"
+            )
         matches = [
             index
             for index, line in enumerate(lines)
             if line.rstrip("\r\n") == anchor
         ]
         if len(matches) != 1:
-            raise ValueError(
+            raise DeterministicContentError(
                 f"chart {chart.id} 的 placement_after 必须逐字匹配 Agent4 中唯一一行："
-                f"当前匹配 {len(matches)} 行"
+                f"当前匹配 {len(matches)} 行（{DETERMINISTIC_CONTENT_HINT}）"
             )
         insertions.setdefault(matches[0], []).append(chart.id)
 
@@ -304,7 +356,13 @@ async def run_formatting(state: "ProjectState") -> Path:
     )
     _compose_final_report_from_analysis(analysis_path, final_report_path, manifest)
 
-    _audit_final_report_citations(final_report_path, supported, sources)
+    _audit_final_report_citations(
+        final_report_path,
+        supported,
+        sources,
+        repository=get_service(config.SOURCE_DATA_DIR).repository,
+        project_id=state.project_dir.name,
+    )
     _audit_composed_report(analysis_path, final_report_path, manifest)
     state.final_report_path = str(final_report_path)
     state.chart_manifest_path = str(chart_manifest_path)
@@ -319,7 +377,11 @@ async def run_formatting(state: "ProjectState") -> Path:
             project_dir=state.project_dir,
             final_report_path=final_report_path,
         )
-        state.final_report_tex_path = str(artifacts["tex_path"])
+        # chrome 引擎不产出 .tex：artifacts["tex_path"] 为 None，不得写 state 兜底路径
+        # （否则前端会给出一个 404 的下载链接）。
+        state.final_report_tex_path = (
+            str(artifacts["tex_path"]) if artifacts["tex_path"] else None
+        )
         state.final_report_html_path = str(artifacts["html_path"])
         state.final_report_pdf_path = (
             str(artifacts["pdf_path"]) if artifacts["pdf_path"] else None
@@ -336,6 +398,12 @@ async def run_formatting(state: "ProjectState") -> Path:
             )
         state.notes.pop("latex_typeset_error", None)
         state.save()
+    except DeterministicContentError as e:
+        # 字形缺失、引用 ID 抄错这类确定性内容错误不能被吞成 RuntimeError——
+        # 那会落进 orchestrator 的 except Exception 被无意义重跑。直接原样上抛。
+        state.notes["latex_typeset_error"] = str(e)
+        state.save()
+        raise
     except Exception as e:
         state.notes["latex_typeset_error"] = str(e)
         state.save()

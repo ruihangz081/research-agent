@@ -47,6 +47,7 @@ from .report_layout import (
     FILE_FINAL_REPORT_TEX,
     generate_typeset_artifacts,
 )
+from .report_formatting import normalize_merged_citations, strip_analysis_annotations
 from .research_plan import ResearchPlanError, load_plan_or_none
 from .state import ProjectState, Stage
 from .tools import default_registry
@@ -61,7 +62,7 @@ ENV_PATH = config.PROJECT_ROOT / ".env"
 
 # 静态资源版本号：所有 HTML 里的 ?v= 应引用同一个常量，保证 CSS/JS 只缓存一份。
 # 修改任意 web_static 资源后 bump 此值即可让浏览器刷新缓存。
-STATIC_VERSION = "20260819-usage-tooltip1"
+STATIC_VERSION = "20260819-usage-tooltip3"
 
 # 静态资源长缓存：资源 URL 携带 STATIC_VERSION，改内容即改版本号，
 # 因此可安全缓存较长时间，避免每次 304 revalidate。
@@ -136,6 +137,29 @@ async def _require_token(request: Request, call_next):
     return response
 _source_service, _source_queue = build_runtime(config.SOURCE_DATA_DIR)
 app.include_router(create_sources_router(_source_service, _source_queue, process_in_background=True))
+
+
+@app.get("/static/design-tokens.css", include_in_schema=False)
+async def design_tokens_css() -> Response:
+    """把 design-tokens.json 渲染成 :root 变量供 Web 使用（单一来源）。
+
+    Web 侧此前在 styles.css 里手写了一份 ``--brk-*`` 镜像——名字看起来像从 token
+    来的，实际是平行的第二份定义：改 design-tokens.json 时 Web 不会跟着变，而反
+    漂移守卫又豁免了变量定义行，测不出来。这个端点让 Web 与图表/打印/LaTeX 共享
+    同一个来源。
+
+    注意注册顺序：必须在 ``app.mount("/static", ...)`` **之前**声明。Starlette 按
+    注册顺序匹配路由，mount 会吞掉其下所有路径——先 mount 再声明会稳定 404。
+    """
+    from .design_tokens import css_root_variables
+
+    return Response(
+        content=css_root_variables() + "\n",
+        media_type="text/css; charset=utf-8",
+        headers=STATIC_CACHE_HEADERS,
+    )
+
+
 if STATIC_DIR.exists():
     app.mount("/static", _CachedStaticFiles(directory=STATIC_DIR), name="static")
 
@@ -499,7 +523,7 @@ def _artifact_paths(state: ProjectState) -> list[tuple[str, str, Path | None]]:
             "LaTeX 源文件",
             Path(state.final_report_tex_path)
             if state.final_report_tex_path
-            else state.project_dir / FILE_FINAL_REPORT_TEX,
+            else None,
         ),
     ]
     if raw_dir.exists():
@@ -518,6 +542,21 @@ def _read_artifact(path: Path | None) -> str:
     text = path.read_text(encoding="utf-8")
     if len(text) > ARTIFACT_LIMIT:
         return text[:ARTIFACT_LIMIT] + "\n\n[... truncated]"
+    return text
+
+
+def _read_display_artifact(key: str, path: Path | None) -> str:
+    """读取产物用于 Web 预览，分析类 Markdown 剥离内部标注、拆分合并引用。
+
+    ``04_analysis.md`` 保留原始引用与推导标注供门禁审计，但读者在「深度分析」页
+    看到的应是结论本身，而不是 ``[事实｜src:...]`` 这样的内部 ID 串。拆分后的标准
+    ``[src:...]`` 引用会由前端继续压缩为可点击的 ``[N]`` 上标。
+    """
+    text = _read_artifact(path)
+    if not text:
+        return text
+    if key == "analysis":
+        return strip_analysis_annotations(normalize_merged_citations(text))
     return text
 
 
@@ -563,7 +602,9 @@ async def _final_report_pdf_path(state: ProjectState) -> Path:
         pdf_path = artifacts["pdf_path"]
         state.chart_manifest_path = str(artifacts["manifest_path"])
         state.final_report_html_path = str(artifacts["html_path"])
-        state.final_report_tex_path = str(artifacts["tex_path"])
+        state.final_report_tex_path = (
+            str(artifacts["tex_path"]) if artifacts["tex_path"] else None
+        )
         state.final_report_pdf_path = str(pdf_path)
         state.final_report_typeset_pdf_path = str(pdf_path)
         state.save()
@@ -1311,7 +1352,7 @@ async def api_artifact(
                 "key": key,
                 "label": label,
                 "exists": bool(path and path.exists()),
-                "content": _read_artifact(path),
+                "content": _read_display_artifact(key, path),
                 "name": path.name if path else "",
                 "version": _artifact_version(path),
             }
@@ -1367,7 +1408,9 @@ async def api_typeset_final_report(project_id: str) -> dict[str, Any]:
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    state.final_report_tex_path = str(artifacts["tex_path"])
+    state.final_report_tex_path = (
+        str(artifacts["tex_path"]) if artifacts["tex_path"] else None
+    )
     state.chart_manifest_path = str(artifacts["manifest_path"])
     state.final_report_html_path = str(artifacts["html_path"])
     if artifacts["pdf_path"]:
@@ -1375,6 +1418,7 @@ async def api_typeset_final_report(project_id: str) -> dict[str, Any]:
         state.final_report_typeset_pdf_path = str(artifacts["pdf_path"])
         # 手动重排版成功即证明排版问题已消除；清掉上次的排版失败标记，
         # 否则项目会一直显示"运行失败"，用户无从判断是否已修好。
+        # 两个引擎都要清：chrome 引擎失败也会写入 latex_typeset_error。
         state.notes.pop("latex_typeset_error", None)
         if state.failed_stage and "排版" in state.failed_stage:
             state.failed_stage = None
@@ -1385,12 +1429,19 @@ async def api_typeset_final_report(project_id: str) -> dict[str, Any]:
         "status": "pdf" if artifacts["pdf_path"] else "tex_only",
         "message": "已生成正式券商研报 PDF" if artifacts["pdf_path"] else "已生成 HTML 与 LaTeX；本机缺少配置的 LaTeX 引擎，暂未编译 PDF",
         "has_engine": bool(artifacts["engine"]),
+        "engine": artifacts.get("engine_used", "latex"),
     }
 
 
 @app.get("/api/projects/{project_id}/download/final-report.tex")
 async def api_download_final_report_tex(project_id: str) -> FileResponse:
     state = _load_state(project_id)
+    # chrome 引擎不产出 LaTeX 源文件：直接 404，绝不现场切回 latex 偷偷生成。
+    if config.REPORT_PDF_ENGINE == "chrome":
+        raise HTTPException(
+            status_code=404,
+            detail="当前 PDF 引擎为 chrome，不产出 LaTeX 源文件",
+        )
     tex_path = (
         Path(state.final_report_tex_path)
         if state.final_report_tex_path
@@ -1406,6 +1457,11 @@ async def api_download_final_report_tex(project_id: str) -> FileResponse:
             final_report_path=final_report,
         )
         tex_path = artifacts["tex_path"]
+        if tex_path is None:
+            raise HTTPException(
+                status_code=404,
+                detail="当前 PDF 引擎为 chrome，不产出 LaTeX 源文件",
+            )
         state.chart_manifest_path = str(artifacts["manifest_path"])
         state.final_report_html_path = str(artifacts["html_path"])
         state.final_report_tex_path = str(tex_path)

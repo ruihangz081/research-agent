@@ -336,6 +336,7 @@ def test_usage_heatmap_has_precise_hover_tooltip() -> None:
     assert 'toLocaleString("zh-CN")' in source
     assert 'data-tooltip-value="${formatExactTokens(value)}"' in source
     assert 'heatmap.addEventListener("pointerover"' in source
+    assert "document.body.appendChild(tooltip)" in source
     assert ".usage-tooltip.visible" in styles
 
 

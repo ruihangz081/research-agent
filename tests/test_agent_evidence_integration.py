@@ -20,6 +20,7 @@ from research_agent.orchestrator import (
     migrate_research_plan,
     recover_blocked_delivery,
 )
+from research_agent.pipeline_errors import DeterministicContentError
 from research_agent.research_plan import derive_plan_from_outline, save_plan
 from research_agent.sources import LocalObjectStore, SQLiteRepository, SourceService
 from research_agent.sources.citations import render_citation
@@ -451,5 +452,5 @@ def test_formatter_rejects_chart_without_exact_agent4_anchor(tmp_path: Path) -> 
         }
     )
 
-    with pytest.raises(ValueError, match="placement_after"):
+    with pytest.raises(DeterministicContentError, match="placement_after"):
         _compose_final_report_from_analysis(analysis, report, manifest)

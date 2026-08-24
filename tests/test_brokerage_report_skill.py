@@ -72,5 +72,5 @@ def test_brokerage_skill_assets_are_complete() -> None:
         "brokerage-report-tables.lua",
         "brokerage-report.sty",
         "brokerage-report.tex",
-        "theme.json",
+        "design-tokens.json",
     }

@@ -75,7 +75,16 @@ REPORT_ENABLE_LLM_CHART_FALLBACK: bool = os.getenv(
 ).lower() in {"1", "true", "yes", "on"}
 REPORT_PANDOC_BIN: str = os.getenv("REPORT_PANDOC_BIN", "pandoc")
 REPORT_LATEX_ENGINE: str = os.getenv("REPORT_LATEX_ENGINE", "xelatex")
+REPORT_PDF_ENGINE: str = os.getenv("REPORT_PDF_ENGINE", "latex")
 REPORT_RENDER_TIMEOUT: int = int(os.getenv("REPORT_RENDER_TIMEOUT", "120"))
+
+#: REPORT_PDF_ENGINE 只允许这两个取值。非法值在导入期即报错，绝不静默回退到 latex。
+_ALLOWED_PDF_ENGINES = ("latex", "chrome")
+if REPORT_PDF_ENGINE not in _ALLOWED_PDF_ENGINES:
+    raise ValueError(
+        f"非法的 REPORT_PDF_ENGINE={REPORT_PDF_ENGINE!r}，"
+        f"只允许 {_ALLOWED_PDF_ENGINES!r}。"
+    )
 
 # === 检查点文件（用户确认后由 CLI 写入） ===
 APPROVAL_MARK = ".approved"
