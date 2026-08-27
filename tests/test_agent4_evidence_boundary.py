@@ -341,6 +341,94 @@ async def test_supported_analysis_citation_allows_agent5(
 
 
 @pytest.mark.anyio
+async def test_claim_gate_runs_one_targeted_repair_before_agent5(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _analysis_state(tmp_path, monkeypatch)
+    repository, _, _, citation = _record_evidence(
+        state,
+        verification_status=VerificationStatus.SUPPORTED,
+    )
+    calls: list[str] = []
+
+    async def fake_analysis(current: ProjectState) -> Path:
+        calls.append("Agent4")
+        path = current.project_dir / config.FILE_ANALYSIS
+        path.write_text(f"Revenue reached 42 million {citation}", encoding="utf-8")
+        _write_outcome(current)
+        (current.project_dir / config.FILE_CLAIMS).write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "claims": [
+                        {
+                            "claim_id": "c1",
+                            "question_id": "q1",
+                            "kind": "fact",
+                            "importance": "critical",
+                            "text": "We will be the global market leader within three years",
+                            "supporting_evidence_ids": ["ev-1"],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    async def fake_repair(
+        current: ProjectState,
+        analysis_path: Path,
+        audit_errors: list[str],
+    ) -> Path:
+        calls.append("ClaimsRepair")
+        assert analysis_path.read_text(encoding="utf-8").startswith(
+            "Revenue reached 42 million"
+        )
+        assert any("找不到对应句子" in item for item in audit_errors)
+        path = current.project_dir / config.FILE_CLAIMS
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "claims": [
+                        {
+                            "claim_id": "c1",
+                            "question_id": "q1",
+                            "kind": "fact",
+                            "importance": "critical",
+                            "text": "Revenue reached 42 million",
+                            "supporting_evidence_ids": ["ev-1"],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    async def fake_formatting(current: ProjectState) -> Path:
+        calls.append("Agent5")
+        path = current.project_dir / config.FILE_FINAL_REPORT
+        path.write_text("report", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(analyst, "run_analysis", fake_analysis)
+    monkeypatch.setattr(analyst, "repair_claims", fake_repair)
+    monkeypatch.setattr(formatter, "run_formatting", fake_formatting)
+    monkeypatch.setattr(orchestrator, "_assert_delivery_ready", lambda state: None)
+
+    await orchestrator.run_state_machine(state, RecordingHost())
+
+    assert calls == ["Agent4", "ClaimsRepair", "Agent5"]
+    assert state.stage == Stage.DONE
+    assert state.failed_stage is None
+    assert state.last_error is None
+    repository.close()
+
+
+@pytest.mark.anyio
 async def test_fabricated_locator_for_supported_source_blocks_agent5(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -693,3 +781,98 @@ def test_cli_and_web_share_analysis_gate_and_retry_logic() -> None:
 
     assert web_app.run_state_machine is orchestrator.run_state_machine
     assert web_app.prepare_retry is orchestrator.prepare_retry
+
+
+@pytest.mark.anyio
+async def test_claim_gate_degrades_and_reaches_done_when_repair_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """结论台账修复失败时降级（claims_disabled），正文仍顺利跑到 DONE。
+
+    这是 §4.2「台账不再阻断正文交付」的端到端验收：台账里的 claim 文本不在正文，
+    一次定向修复也失败，流程应降级关闭 claims 能力，继续进入 Agent5 并完成。
+    """
+    state = _analysis_state(tmp_path, monkeypatch)
+    repository, _, _, citation = _record_evidence(
+        state,
+        verification_status=VerificationStatus.SUPPORTED,
+    )
+    calls: list[str] = []
+
+    async def fake_analysis(current: ProjectState) -> Path:
+        calls.append("Agent4")
+        path = current.project_dir / config.FILE_ANALYSIS
+        path.write_text(f"Revenue reached 42 million {citation}", encoding="utf-8")
+        _write_outcome(current)
+        (current.project_dir / config.FILE_CLAIMS).write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "claims": [
+                        {
+                            "claim_id": "c1",
+                            "question_id": "q1",
+                            "kind": "fact",
+                            "importance": "critical",
+                            "text": "We will be the global market leader within three years",
+                            "supporting_evidence_ids": ["ev-1"],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    async def fail_repair(
+        current: ProjectState,
+        analysis_path: Path,
+        audit_errors: list[str],
+    ) -> Path:
+        calls.append("ClaimsRepair")
+        # 修复仍然写坏台账：claim 文本依旧不在正文里
+        path = current.project_dir / config.FILE_CLAIMS
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "claims": [
+                        {
+                            "claim_id": "c1",
+                            "question_id": "q1",
+                            "kind": "fact",
+                            "importance": "critical",
+                            "text": "Still not in the body",
+                            "supporting_evidence_ids": ["ev-1"],
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    async def fake_formatting(current: ProjectState) -> Path:
+        calls.append("Agent5")
+        path = current.project_dir / config.FILE_FINAL_REPORT
+        path.write_text("report", encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(analyst, "run_analysis", fake_analysis)
+    monkeypatch.setattr(analyst, "repair_claims", fail_repair)
+    monkeypatch.setattr(formatter, "run_formatting", fake_formatting)
+    monkeypatch.setattr(orchestrator, "_assert_delivery_ready", lambda state: None)
+
+    await orchestrator.run_state_machine(state, RecordingHost())
+
+    assert calls == ["Agent4", "ClaimsRepair", "Agent5"]
+    assert state.stage == Stage.DONE
+    assert state.failed_stage is None
+    assert state.last_error is None
+    # 清洗成功（而非关闭）：坏 claim 被确定性删除，claims 能力仍可用
+    assert state.notes["claims_disabled"] is False
+    assert state.notes["analysis_dropped_claim_ids"] == ["c1"]
+    repository.close()

@@ -676,3 +676,26 @@ def test_clarification_stage_is_not_treated_as_agent_running() -> None:
 def test_clarification_stage_has_no_artifact_checkpoint_spec() -> None:
     """澄清不是产物审批检查点，不应出现在 CHECKPOINT_SPECS 中。"""
     assert orchestrator.checkpoint_for(Stage.AWAIT_CLARIFICATION) is None
+
+
+def test_paused_notes_persist_and_serialize(
+    projects_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """额度耗尽暂停时，paused 标记写入 notes 并可序列化暴露，且不落 failed。"""
+    from research_agent import web_app
+
+    monkeypatch.setattr(config, "PROJECTS_DIR", projects_dir)
+    state = ProjectState(topic="暂停测试", date_str="20260423")
+    state.notes["paused"] = True
+    state.notes["pause_reason"] = "quota exhausted"
+    state.notes["delivery_status"] = "done_degraded"
+    state.notes["delivery_degradation"] = ["PDF 生成失败"]
+    state.save()
+
+    payload = web_app._serialize_state(state)
+    assert payload["paused"] is True
+    assert payload["pause_reason"] == "quota exhausted"
+    assert payload["delivery_status"] == "done_degraded"
+    assert payload["delivery_degradation"] == ["PDF 生成失败"]
+    # paused 不是 failed：不应有失败阶段
+    assert payload["failed"] is False

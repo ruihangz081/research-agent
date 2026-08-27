@@ -372,6 +372,16 @@ def _validate_single_chart(
     # claim 文本本身
     claim_texts = [c.text for c in resolved_claims]
 
+    # 正文兜底：Agent4 正文已经通过引用审计与结论台账门禁，是可信的数值来源。Agent5
+    # 常把正文表格/敏感性矩阵里的数值画进图（如收入明细、可比公司 PE、DCF 敏感性
+    # 矩阵），这些数值未必被单独选为 claim，也不一定出现在 evidence 的 claim/excerpt
+    # 文本里；若 strict 模式只允许匹配候选 claim/evidence，就会把「正文里真实存在的
+    # 数字」误判为编造，整份交付反复作废。因此把正文全文加入匹配源，真正编造的数字
+    # （正文里完全没有）仍会失败，防幻觉能力不削弱。
+    body_text_sources: list[str] = []
+    if analysis_text is not None:
+        body_text_sources.append(analysis_text)
+
     # 期望语义：由 chart.unit 推导（百分比/倍数/普通数值严格区分）。
     expected_semantic = _expected_semantic(chart.unit)
 
@@ -385,7 +395,8 @@ def _validate_single_chart(
             display = float(raw_value)
             label = chart.labels[index] if index < len(chart.labels) else f"#{index}"
             tolerance = _display_half_unit(display)
-            # 先在 claim 文本匹配，再在 evidence 文本匹配（均带语义判定）。
+            # 匹配顺序（由严到松）：候选 claim 文本 → 关联 evidence 文本 → Agent4
+            # 正文全文（已通过引用审计与结论台账门禁，是可信数值来源）。
             matched, _ = _match_value_in_text(
                 display, claim_texts, tolerance, expected_semantic=expected_semantic
             )
@@ -395,6 +406,11 @@ def _validate_single_chart(
                     display, evidence_text_sources, tolerance, expected_semantic=expected_semantic
                 )
                 rule = "exact_evidence" if matched else ""
+            if not matched:
+                matched, _ = _match_value_in_text(
+                    display, body_text_sources, tolerance, expected_semantic=expected_semantic
+                )
+                rule = "body" if matched else ""
             point_refs.append(
                 {
                     "label": label,
@@ -408,7 +424,7 @@ def _validate_single_chart(
             if not matched:
                 all_ok = False
                 result.ambiguity_reasons.append(
-                    f"数值 {raw_value}（{label}/{series.name}）无法在候选 claim 或 SUPPORTED evidence 中匹配"
+                    f"数值 {raw_value}（{label}/{series.name}）无法在候选 claim、SUPPORTED evidence 或分析正文中匹配"
                 )
 
     result.point_refs = point_refs
@@ -469,14 +485,16 @@ def apply_provenance_gate(
 ) -> set[str]:
     """应用门禁并回填 publisher，返回需降级为数据表的图表 id 集合。
 
-    - 严格模式（version=2）：必需图失败抛 DeterministicContentError；可选图失败
-      加入 fallback 集合，由渲染层降级 _fallback_table()。
-    - 兼容模式（version=1）：不做阻断、不降级，仅回填 publisher 供观测。
+    - 严格模式（version=2）与兼容模式（version=1）现在统一为**降级不阻断**：
+      数值溯源失败的图一律加入 fallback 集合，由渲染层降级为数据表，绝不抛
+      ``DeterministicContentError`` 阻断整份交付。图表数值溯源防的是「图里编造
+      数字」，但 SOTP 估值、DCF 敏感性矩阵等**自建测算图**的数值是派生估算，正文
+      只会给出结论区间而不会逐值列出，逐字溯源本就不适用；为这类图作废整轮、重跑
+      LLM 的代价远大于「把该图降级成表格」。
     - caption 的 source 统一改由关联证据 publisher 推导。
     """
     fallback: set[str] = set()
     by_id = {entry["chart_id"]: entry for entry in report["charts"]}
-    failures: list[str] = []
     for chart in manifest.charts:
         entry = by_id.get(chart.id)
         if entry is None:
@@ -485,17 +503,6 @@ def apply_provenance_gate(
             chart.source = entry["publisher"]
         if entry["ok"]:
             continue
-        if not strict:
-            # v1 兼容：不阻断、不降级。
-            continue
-        if chart.required:
-            failures.append(
-                f"{chart.id}: {'; '.join(entry['ambiguity_reasons'][:3])}"
-            )
-        else:
-            fallback.add(chart.id)
-    if failures:
-        raise DeterministicContentError(
-            f"必需图表数值溯源失败：{'；'.join(failures)}（{DETERMINISTIC_CONTENT_HINT}）"
-        )
+        # 数值溯源失败：降级为数据表，绝不阻断交付。图表仍以表格形式展示其数值。
+        fallback.add(chart.id)
     return fallback

@@ -52,6 +52,64 @@ def test_manifest_validation_rejects_bad_shapes_and_resources(tmp_path: Path) ->
         load_chart_manifest(path, max_charts=2)
 
 
+def test_matrix_heatmap_normalized_to_series(tmp_path: Path) -> None:
+    """模型输出矩阵式 heatmap（x_labels/y_labels/values）时应被重组为契约结构。
+
+    数值只做结构重排、不换算不新增，后续数值溯源门禁仍逐值校验。
+    """
+    raw = {
+        "id": "sens",
+        "type": "heatmap",
+        "title": "敏感性",
+        "unit": "港元",
+        "as_of_date": "2026-08-25",
+        "source": "自建模型",
+        "placement_after": "## 章节 4",
+        "x_labels": ["1.5%", "2.0%", "2.5%"],
+        "y_labels": ["10%", "12%"],
+        "values": [[42, 48, 55], [32, 36, 40]],
+        "provenance": {"claim_ids": ["c1"]},
+    }
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps({"version": 2, "charts": [raw]}, ensure_ascii=False), encoding="utf-8")
+    manifest = load_chart_manifest(path)
+    chart = manifest.charts[0]
+    assert chart.labels == ["1.5%", "2.0%", "2.5%"]
+    assert [series.name for series in chart.series] == ["10%", "12%"]
+    assert [series.values for series in chart.series] == [[42, 48, 55], [32, 36, 40]]
+    assert all(series.value_kind == ["estimate"] * 3 for series in chart.series)
+
+
+def test_single_series_range_bar_normalized_to_two_series(tmp_path: Path) -> None:
+    """模型输出单 series 内嵌 range_lower/range_upper 时应重组为两个 series。"""
+    raw = {
+        "id": "range",
+        "type": "range_bar",
+        "title": "目标价区间",
+        "unit": "港元",
+        "as_of_date": "2026-08-25",
+        "source": "三方法合成",
+        "placement_after": "## 章节 6",
+        "labels": ["熊市", "基准", "牛市"],
+        "series": [
+            {
+                "name": "目标价区间",
+                "values": [None, None, None],
+                "range_lower": [28, 38, 50],
+                "range_upper": [35, 45, 80],
+                "value_kind": ["forecast", "forecast", "forecast"],
+            }
+        ],
+        "provenance": {"claim_ids": ["c9"]},
+    }
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps({"version": 2, "charts": [raw]}, ensure_ascii=False), encoding="utf-8")
+    manifest = load_chart_manifest(path)
+    chart = manifest.charts[0]
+    assert [series.name for series in chart.series] == ["下限", "上限"]
+    assert [series.values for series in chart.series] == [[28, 38, 50], [35, 45, 80]]
+
+
 def test_all_seven_deterministic_chart_types_render(tmp_path: Path) -> None:
     charts = [
         _chart("line", "line", [_series("规模", [10, 13, 18], ["actual", "actual", "forecast"])]),

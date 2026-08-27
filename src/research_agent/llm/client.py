@@ -21,6 +21,7 @@ from .errors import (
     ContextLengthExceededError,
     LLMError,
     ModelNotFoundError,
+    QuotaExhaustedError,
     RateLimitError,
     ServerError,
 )
@@ -131,6 +132,9 @@ class LLMClient:
                             if chunk:
                                 yield chunk
                     return  # 成功完成
+            except QuotaExhaustedError:
+                # 固定窗口额度耗尽：重试无意义，直接上抛进入 paused。
+                raise
             except (RateLimitError, ServerError) as e:
                 if attempt == self.max_retries:
                     raise
@@ -183,6 +187,9 @@ class LLMClient:
                 if resp.status_code == 200:
                     return resp.json()
                 self._raise_for_status(resp.status_code, resp.text)
+            except QuotaExhaustedError:
+                # 固定窗口额度耗尽：重试无意义，直接上抛进入 paused。
+                raise
             except (RateLimitError, ServerError) as e:
                 last_err = e
                 if attempt == self.max_retries:
@@ -208,6 +215,10 @@ class LLMClient:
     def _raise_for_status(status_code: int, body: str) -> None:
         """根据状态码抛出对应的错误。"""
         if status_code == 429:
+            if LLMClient._is_quota_exhausted(body):
+                raise QuotaExhaustedError(
+                    "Quota exhausted", status_code=status_code, body=body
+                )
             raise RateLimitError("Rate limited", status_code=status_code, body=body)
         if status_code in (401, 403):
             raise AuthenticationError(
@@ -229,6 +240,29 @@ class LLMClient:
         raise LLMError(
             f"API error {status_code}", status_code=status_code, body=body
         )
+
+    #: 429 响应体中出现这些关键词即判定为「固定窗口额度耗尽」而非短期限流。
+    #: 不同厂商措辞不同（余额不足 / 配额用完 / 计费 / 额度已耗尽），统一用小写子串匹配。
+    _QUOTA_KEYWORDS = (
+        "quota",
+        "balance",
+        "billing",
+        "insufficient",
+        "exhausted",
+        "额度",
+        "余额",
+        "欠费",
+        "配额",
+        "计费",
+        "耗尽",
+        "用量超限",
+        "充值",
+    )
+
+    @staticmethod
+    def _is_quota_exhausted(body: str) -> bool:
+        lowered = (body or "").lower()
+        return any(keyword in lowered for keyword in LLMClient._QUOTA_KEYWORDS)
 
     @staticmethod
     def _parse_response(data: dict[str, Any]) -> LLMResponse:

@@ -42,8 +42,7 @@ function renderSources() {
   $("empty").classList.toggle("hidden", sources.length > 0);
   $("sources").innerHTML = sources.map((source) => {
     const tone = statusTone(source.status);
-    const versions = state.sources.filter((item) => item.logical_source_id === source.logical_source_id).length;
-    return `<tr data-source="${source.source_id}"><td><button class="source-name row-link" type="button" data-action="preview"><span class="file-icon">${Lumitrace.icon("file", 17)}</span><span class="table-title"><strong>${Lumitrace.escapeHtml(source.title || source.original_filename)}</strong><small>${Lumitrace.escapeHtml(source.original_filename)}</small></span></button></td><td><span class="status-pill ${tone}"><i class="status-dot ${tone}"></i>${Lumitrace.sourceStatus(source.status)}</span></td><td>v${source.version}.0</td><td><span class="tier">${Lumitrace.escapeHtml(source.source_tier)}</span></td><td>${Lumitrace.formatDate(source.updated_at || source.created_at)}</td><td><div class="row-actions"><button class="icon-button" type="button" data-action="preview" title="预览">${Lumitrace.icon("search", 15)}</button><button class="icon-button" type="button" data-action="edit" title="编辑">✎</button>${["ready", "needs_review"].includes(source.status) ? `<button class="icon-button" type="button" data-action="activate" title="激活">${Lumitrace.icon("check", 15)}</button>` : ""}<button class="icon-button" type="button" data-action="more" title="更多操作">${Lumitrace.icon("more", 16)}</button></div><div class="hidden" data-version-count="${versions}"></div></td></tr>`;
+    return `<tr data-source="${source.source_id}"><td><button class="source-name row-link" type="button" data-action="preview"><span class="file-icon">${Lumitrace.icon("file", 17)}</span><span class="table-title"><strong>${Lumitrace.escapeHtml(source.title || source.original_filename)}</strong><small>${Lumitrace.escapeHtml(source.original_filename)}</small></span></button></td><td><span class="status-pill ${tone}"><i class="status-dot ${tone}"></i>${Lumitrace.sourceStatus(source.status)}</span></td><td>v${source.version}.0</td><td><span class="tier">${Lumitrace.escapeHtml(source.source_tier)}</span></td><td>${Lumitrace.formatDate(source.updated_at || source.created_at)}</td><td><div class="row-actions"><button class="icon-button" type="button" data-action="preview" title="预览">${Lumitrace.icon("search", 15)}</button><button class="icon-button" type="button" data-action="edit" title="编辑">✎</button>${["ready", "needs_review"].includes(source.status) ? `<button class="icon-button" type="button" data-action="activate" title="激活">${Lumitrace.icon("check", 15)}</button>` : ""}<button class="icon-button" type="button" data-action="more" title="更多操作">${Lumitrace.icon("more", 16)}</button></div></td></tr>`;
   }).join("");
   // 事件委托：容器上绑一次
   if (!state._sourcesBound) {
@@ -55,7 +54,6 @@ function renderSources() {
       handleRowAction(row.dataset.source, action);
     });
   }
-  $("empty").querySelector("[data-choose-files]")?.addEventListener("click", () => $("files").click());
 }
 
 async function loadProjects() {
@@ -118,12 +116,13 @@ async function preview(id) {
   try {
     const data = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}/sources/${encodeURIComponent(id)}`);
     const source = data.source;
-    const document = data.document;
+    // 不命名 document：避免遮蔽全局 document，后续维护时误用
+    const doc = data.document;
     $("inspectorTitle").textContent = source.title || source.original_filename;
-    const warnings = document?.warnings?.length ? `<div class="warning-box">${document.warnings.map((item) => `${Lumitrace.escapeHtml(item.code)}：${Lumitrace.escapeHtml(item.message)}`).join("<br>")}</div>` : "";
+    const warnings = doc?.warnings?.length ? `<div class="warning-box">${doc.warnings.map((item) => `${Lumitrace.escapeHtml(item.code)}：${Lumitrace.escapeHtml(item.message)}`).join("<br>")}</div>` : "";
     // 正文预览：取前若干个 block 的文本。过滤掉过短的碎片块（如单个词/数字），
     // 优先展示成段落的语义内容，避免"只有词汇"的可读性差问题。
-    const blocks = document?.blocks || [];
+    const blocks = doc?.blocks || [];
     const meaningful = blocks
       .filter((b) => b.text && b.text.trim().length >= 8)
       .slice(0, 16);
@@ -221,6 +220,9 @@ function clearInspector() {
 
 function bindEvents() {
   $("chooseFiles").addEventListener("click", () => $("files").click());
+  // 空态里的"上传第一份材料"按钮：静态元素，只在绑定时挂一次监听，
+  // 放在 renderSources 里会随每次重绘累积重复监听
+  $("empty").querySelector("[data-choose-files]")?.addEventListener("click", () => $("files").click());
   $("files").addEventListener("change", upload);
   $("refresh").addEventListener("click", refresh);
   $("search").addEventListener("click", search);

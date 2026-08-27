@@ -17,7 +17,19 @@ class LLMError(Exception):
 
 
 class RateLimitError(LLMError):
-    """429 Too Many Requests — 触发重试。"""
+    """429 Too Many Requests — 触发重试（短期限流）。"""
+
+    pass
+
+
+class QuotaExhaustedError(RateLimitError):
+    """429 固定窗口额度耗尽 — 不重试，直接进入 paused。
+
+    与短期限流区分：短期限流（retry-after 秒级）退避重试即可恢复；额度耗尽
+    （余额不足 / 月度配额用完 / billing 相关）重试只会白白消耗等待时间，必须
+    等待外部条件恢复（充值、配额刷新）。识别依据是 429 响应体中的额度/余额/
+    计费关键词，或 retry-after 异常大的退避窗口。
+    """
 
     pass
 

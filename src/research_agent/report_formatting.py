@@ -644,8 +644,9 @@ def replace_chart_placeholders(
         chart = chart_map[match.group(1)]
         asset = assets.get(chart.id)
         if asset is None:
-            if chart.required:
-                raise ValueError(f"必需图表没有渲染资产：{chart.id}")
+            # 无渲染资产（含数值溯源失败的降级图）：一律降级为数据表，不阻断交付。
+            # 图表数值溯源防的是「编造数字」，但 SOTP/DCF 等自建测算图的数值是派生
+            # 估算，逐字溯源本就不适用；为这类图作废整份交付得不偿失。
             return _fallback_table(chart)
         note = f"；备注：{chart.note}" if chart.note else ""
         if target == "html":
@@ -922,7 +923,9 @@ def inspect_pdf(pdf_path: Path, *, topic: str) -> dict[str, Any]:
     text = "\n".join(page.get_text() for page in document)
     if re.sub(r"\s+", "", topic) not in re.sub(r"\s+", "", text):
         raise RuntimeError("PDF 文本检查失败：缺少报告标题")
-    if "不构成任何投资建议" not in text:
+    # 免责声明文字在 PDF 提取时可能被换行拆散（如「不构成任何投\n资建议」），
+    # 子串匹配会误报缺失。这里与标题检查一致，先去掉全部空白再比对。
+    if "不构成任何投资建议" not in re.sub(r"\s+", "", text):
         raise RuntimeError("PDF 文本检查失败：缺少免责声明")
     preview_dir = pdf_path.parent / "tmp" / "pdfs"
     preview_dir.mkdir(parents=True, exist_ok=True)
@@ -1018,51 +1021,79 @@ async def generate_report_artifacts(
     # 交付渲染前统一归一化：拆分 [事实｜src:...]，并把 Agent4 只写的 [ev=ev_xxx]
     # 展开为标准引用。审计（orchestrator / Agent5）与渲染必须看到同一份文本，否则
     # 新格式下 ev=ev_ / chunk=chk 会原样泄入 PDF 与 HTML。
+    #
+    # 归一化失败（残留融合式引用）是正文引用真实性问题，仍须 fail-closed，不降级。
     markdown = canonicalize_report_text(
         markdown,
         repository=repository,
         project_id=project_dir.name,
     )
-    html_path = build_report_html(
-        topic=topic,
-        project_id=project_dir.name,
-        project_dir=project_dir,
-        markdown=markdown,
-        manifest=manifest,
-        assets=assets,
-    )
-    if config.REPORT_PDF_ENGINE == "chrome":
-        # Chrome 打印管线：HTML 与图表仍由上面的 report_formatting 链路产出，
-        # 这里只替换「HTML → PDF」这一段。不生成 .tex，tex_path 置 None。
-        # generate_print_pdf 用 Playwright 同步 API，必须脱离 asyncio 事件循环
-        # 在独立线程跑，否则 sync_playwright 会拒绝在事件循环内启动。
-        from .report_print import generate_print_pdf
 
-        print_result = await asyncio.to_thread(
-            generate_print_pdf, project_dir=project_dir, html_path=html_path
-        )
-        pdf_path = print_result.pdf_path
-        tex_path = None
-        # Chrome 封面标题取自 HTML 的 h1（报告自身标题），不是 topic；QA 的标题
-        # 检查要用同一口径，否则「topic 调研报告」与 h1 对不上会误判 PDF 缺标题。
-        html_text = html_path.read_text(encoding="utf-8")
-        title_match = re.search(r"<h1[^>]*>(.*?)</h1>", html_text, re.S)
-        qa_topic = (
-            re.sub(r"<[^>]+>", "", title_match.group(1)).strip()
-            if title_match
-            else topic
-        )
-    else:
-        tex_path = build_report_latex(
+    # 多格式独立交付：Markdown 恒为首要产物，HTML 与 PDF 各自独立降级。
+    # 任一格式失败都不阻断其它格式，只有 Markdown（final_report_path 已在 formatter
+    # 写好）缺失才算交付失败。降级原因统一收集，供状态与前端展示。
+    degradation: list[str] = []
+    html_path = None
+    try:
+        html_path = build_report_html(
             topic=topic,
+            project_id=project_dir.name,
             project_dir=project_dir,
             markdown=markdown,
             manifest=manifest,
             assets=assets,
         )
-        pdf_path = compile_report_pdf(tex_path)
-        qa_topic = topic
-    qa = inspect_pdf(pdf_path, topic=qa_topic) if pdf_path else None
+    except Exception as exc:
+        degradation.append(f"HTML 生成失败，已交付 Markdown：{exc}")
+
+    tex_path = None
+    pdf_path = None
+    qa = None
+    if html_path is not None or config.REPORT_PDF_ENGINE != "chrome":
+        # latex 引擎独立于 HTML；chrome 引擎则依赖 HTML，HTML 失败时 PDF 也降级。
+        try:
+            if config.REPORT_PDF_ENGINE == "chrome":
+                # Chrome 打印管线：HTML 与图表仍由上面的 report_formatting 链路产出，
+                # 这里只替换「HTML → PDF」这一段。不生成 .tex，tex_path 置 None。
+                # generate_print_pdf 用 Playwright 同步 API，必须脱离 asyncio 事件循环
+                # 在独立线程跑，否则 sync_playwright 会拒绝在事件循环内启动。
+                from .report_print import generate_print_pdf
+
+                print_result = await asyncio.to_thread(
+                    generate_print_pdf, project_dir=project_dir, html_path=html_path
+                )
+                pdf_path = print_result.pdf_path
+                tex_path = None
+                # Chrome 封面标题取自 HTML 的 h1（报告自身标题），不是 topic；QA 的
+                # 标题检查要用同一口径，否则「topic 调研报告」与 h1 对不上会误判 PDF
+                # 缺标题。
+                html_text = html_path.read_text(encoding="utf-8")
+                title_match = re.search(r"<h1[^>]*>(.*?)</h1>", html_text, re.S)
+                qa_topic = (
+                    re.sub(r"<[^>]+>", "", title_match.group(1)).strip()
+                    if title_match
+                    else topic
+                )
+            else:
+                tex_path = build_report_latex(
+                    topic=topic,
+                    project_dir=project_dir,
+                    markdown=markdown,
+                    manifest=manifest,
+                    assets=assets,
+                )
+                pdf_path = compile_report_pdf(tex_path)
+                qa_topic = topic
+            if pdf_path:
+                try:
+                    qa = inspect_pdf(pdf_path, topic=qa_topic)
+                except Exception as exc:
+                    degradation.append(f"PDF QA 检查失败，已交付 PDF：{exc}")
+        except Exception as exc:
+            degradation.append(f"PDF 生成失败，已交付 Markdown/HTML：{exc}")
+    else:
+        degradation.append("HTML 生成失败，chrome 引擎无法生成 PDF")
+
     return {
         "manifest_path": manifest_path,
         "charts_dir": charts_dir,
@@ -1073,4 +1104,5 @@ async def generate_report_artifacts(
         "engine_used": config.REPORT_PDF_ENGINE,
         "pandoc": find_pandoc(),
         "qa": qa,
+        "degradation": degradation,
     }

@@ -117,8 +117,12 @@ def test_duplicate_anchor_blocks(tmp_path: Path) -> None:
         load_chart_manifest(path)
 
 
-def test_compose_anchor_mismatch_raises_deterministic_error(tmp_path: Path) -> None:
-    """锚点匹配数≠1 抛 DeterministicContentError（不落 except Exception 重试）。"""
+def test_compose_anchor_mismatch_degrades_to_end(tmp_path: Path) -> None:
+    """锚点匹配不到时降级到文末插入，不再作废整轮。
+
+    锚点只是排版提示，不是事实正确性门禁。模型偶发多打/少打 ``#`` 或复制到行首
+    缩进就作废整轮、重跑 LLM，代价远大于图表位置略有偏移。
+    """
     from research_agent.agents.formatter import _compose_final_report_from_analysis
 
     analysis = tmp_path / "04_analysis.md"
@@ -142,12 +146,52 @@ def test_compose_anchor_mismatch_raises_deterministic_error(tmp_path: Path) -> N
             ],
         }
     )
-    with pytest.raises(DeterministicContentError, match="placement_after"):
-        _compose_final_report_from_analysis(analysis, report, manifest)
+    _compose_final_report_from_analysis(analysis, report, manifest)
+    # 图表占位符仍被插入（降级到文末），报告得以交付
+    assert "{{chart:c}}" in report.read_text(encoding="utf-8")
 
 
-def test_reuse_check_rejects_bad_anchor(tmp_path: Path) -> None:
-    """复用检查必须真正校验锚点在正文中唯一匹配，坏锚点不算可复用。"""
+def test_compose_anchor_ignores_leading_indentation(tmp_path: Path) -> None:
+    """锚点复制时丢掉行首缩进不应阻断：正文 ``  **加粗行**`` 与锚点 ``**加粗行**`` 一致。
+
+    修复前用 ``line.rstrip("\\r\\n") == anchor`` 只去行尾空白，行首缩进会让
+    加粗正文行（常见于"**DCF 敏感性矩阵...**"这类非标题锚点）匹配 0 行、整轮作废。
+    """
+    from research_agent.agents.formatter import _compose_final_report_from_analysis
+
+    analysis = tmp_path / "04_analysis.md"
+    report = tmp_path / "05_final_report.md"
+    analysis.write_text(
+        "# 分析\n\n  **DCF 敏感性矩阵：**\n\n正文内容\n", encoding="utf-8"
+    )
+    manifest = ChartManifest.model_validate(
+        {
+            "version": 1,
+            "charts": [
+                {
+                    "id": "c",
+                    "type": "line",
+                    "title": "t",
+                    "unit": "%",
+                    "as_of_date": "2026-08-17",
+                    "source": "s",
+                    "labels": ["2025"],
+                    "series": [{"name": "增速", "values": [8], "value_kind": ["actual"]}],
+                    "placement_after": "**DCF 敏感性矩阵：**",
+                }
+            ],
+        }
+    )
+    _compose_final_report_from_analysis(analysis, report, manifest)
+    assert "{{chart:c}}" in report.read_text(encoding="utf-8")
+
+
+def test_reuse_check_accepts_manifest_with_unmatched_anchor(tmp_path: Path) -> None:
+    """锚点匹配不到不再阻止复用：清单可解析且时间戳新于正文即可复用。
+
+    锚点位置漂移由 ``_resolve_anchor_index`` 降级处理，不构成复用障碍，避免
+    重新调用 LLM 生成清单。
+    """
     from research_agent.agents.formatter import _can_reuse_chart_manifest
 
     analysis = tmp_path / "04_analysis.md"
@@ -174,11 +218,10 @@ def test_reuse_check_rejects_bad_anchor(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    # 坏锚点：manifest 更新于 analysis 之后，但锚点不唯一匹配 → 不可复用
     import os
 
     os.utime(manifest_path, (analysis.stat().st_mtime + 10, analysis.stat().st_mtime + 10))
-    assert _can_reuse_chart_manifest(manifest_path, analysis) is False
+    assert _can_reuse_chart_manifest(manifest_path, analysis) is True
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -368,7 +411,12 @@ def test_zero_evidence_judgment_claim_does_not_fail_chart(tmp_path: Path) -> Non
 def test_unresolvable_candidate_alone_still_fails_when_value_unmatched(
     tmp_path: Path,
 ) -> None:
-    """候选全部落空时仍须 fail-closed：strict 模式下没有兜底文本源，数值匹配不上。"""
+    """候选 claim 落空但数值仍在正文中时应通过——claim_ids 只是线索不是通过依据。
+
+    修复前 strict 模式只允许匹配候选 claim/evidence，候选落空就让正文里真实存在的
+    数字被误判为编造。现在正文（已通过 Agent4 门禁）兜底匹配，数值 42 在正文里，
+    因此通过；候选瑕疵只留在 candidate_notes 供观测。
+    """
     repository, project_dir = _setup_project(tmp_path, with_claims=True)
     try:
         chart = _chart(
@@ -382,8 +430,34 @@ def test_unresolvable_candidate_alone_still_fails_when_value_unmatched(
             claims_path=project_dir / "04_claims.json",
         )
         entry = report["charts"][0]
-        assert entry["ok"] is False
+        assert entry["ok"] is True
+        assert entry["match_rule"] == "chart_level_evidence"
         assert any("c_missing" in note for note in entry["candidate_notes"])
+        # 数值 42 通过正文兜底匹配到
+        assert any(p["match_rule"] == "body" for p in entry["point_refs"])
+    finally:
+        repository.close()
+
+
+def test_strict_mode_body_fallback_still_rejects_fabricated_value(
+    tmp_path: Path,
+) -> None:
+    """正文兜底不削弱防幻觉：正文里完全没有的数字仍须 fail-closed。"""
+    repository, project_dir = _setup_project(tmp_path, with_claims=True)
+    try:
+        chart = _chart(
+            "c", "bar", [_series("营收", [999])], labels=["2025"],
+            provenance={"claim_ids": ["c_missing"]},
+        )
+        manifest = ChartManifest.model_validate({"version": 2, "charts": [chart]})
+        report = validate_chart_provenance(
+            manifest, project_dir=project_dir, repository=repository,
+            analysis_path=project_dir / "04_analysis.md",
+            claims_path=project_dir / "04_claims.json",
+        )
+        entry = report["charts"][0]
+        assert entry["ok"] is False
+        assert any("无法在候选 claim" in note for note in entry["ambiguity_reasons"])
     finally:
         repository.close()
 
@@ -434,7 +508,7 @@ def test_publisher_derived_from_evidence_source(tmp_path: Path) -> None:
         repository.close()
 
 
-def test_provenance_fabricated_value_fails_closed(tmp_path: Path) -> None:
+def test_provenance_fabricated_value_degrades_to_table(tmp_path: Path) -> None:
     repository, project_dir = _setup_project(tmp_path, with_claims=True)
     try:
         chart = _chart(
@@ -448,9 +522,9 @@ def test_provenance_fabricated_value_fails_closed(tmp_path: Path) -> None:
             claims_path=project_dir / "04_claims.json",
         )
         assert report["charts"][0]["ok"] is False
-        # 严格模式必需图失败阻断
-        with pytest.raises(DeterministicContentError, match="数值溯源失败"):
-            apply_provenance_gate(report, manifest, strict=True)
+        # 数值溯源失败不再阻断整份交付：该图降级为数据表。
+        fallback = apply_provenance_gate(report, manifest, strict=True)
+        assert fallback == {"c"}
     finally:
         repository.close()
 

@@ -28,5 +28,13 @@ class DeterministicContentError(PipelineError):
     """
 
 
+class PipelinePausedError(PipelineError):
+    """流水线因外部条件（限流额度耗尽等）暂停，等待外部恢复。
+
+    与 ``PipelineError`` 的区别：这是**可恢复的等待状态**，不是失败。重试无意义，
+    也不应把项目标记为 failed；应进入 paused，等额度恢复后由用户显式 resume。
+    """
+
+
 # 错误信息里统一携带的提示，供工作台/日志一眼识别「重试无意义」。
 DETERMINISTIC_CONTENT_HINT = "内容错误，重试无效，需修正上游产物"

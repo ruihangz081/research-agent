@@ -310,11 +310,14 @@ async def test_formatter_reuses_report_and_surfaces_typeset_failure(
     monkeypatch.setattr(formatter, "generate_typeset_artifacts", fail_typeset)
     monkeypatch.setattr(formatter, "run_agent", fail_if_agent_runs)
 
-    with pytest.raises(RuntimeError, match="Agent5 排版交付物生成失败"):
-        await run_formatting(state)
+    # 排版交付物生成失败不再阻断正文交付：Markdown 已就绪，降级为仅 Markdown。
+    result = await run_formatting(state)
 
+    assert result == report
     assert state.final_report_path == str(report)
     assert state.notes["latex_typeset_error"] == "layout failed"
+    assert state.notes["delivery_status"] == "done_degraded"
+    assert "排版交付物生成失败" in state.notes["delivery_degradation"][0]
     assert report.read_text(encoding="utf-8") == analysis_text
     assert "可追溯证据索引" not in report.read_text(encoding="utf-8")
     repository.close()
@@ -424,7 +427,7 @@ def test_formatter_preserves_agent4_text_and_only_inserts_charts(tmp_path: Path)
         formatter._audit_composed_report(analysis, report, manifest)
 
 
-def test_formatter_rejects_chart_without_exact_agent4_anchor(tmp_path: Path) -> None:
+def test_formatter_degrades_chart_without_anchor(tmp_path: Path) -> None:
     analysis = tmp_path / "04_analysis.md"
     report = tmp_path / "05_final_report.md"
     analysis.write_text("# 行业分析\n", encoding="utf-8")
@@ -452,5 +455,6 @@ def test_formatter_rejects_chart_without_exact_agent4_anchor(tmp_path: Path) -> 
         }
     )
 
-    with pytest.raises(DeterministicContentError, match="placement_after"):
-        _compose_final_report_from_analysis(analysis, report, manifest)
+    # 缺 placement_after 不再作废整轮：降级到文末插入，报告仍可交付。
+    _compose_final_report_from_analysis(analysis, report, manifest)
+    assert "{{chart:supply_trend}}" in report.read_text(encoding="utf-8")

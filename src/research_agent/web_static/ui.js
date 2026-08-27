@@ -178,7 +178,8 @@ const Lumitrace = (() => {
       if (!citationNumbers.has(sourceId)) citationNumbers.set(sourceId, citationNumbers.size + 1);
       const number = citationNumbers.get(sourceId);
       const projectId = selectedProject();
-      const href = `/materials?project=${encodeURIComponent(projectId)}&source=${encodeURIComponent(sourceId)}`;
+      // 指向 SPA 路径：点击引用走前端路由切换，不再整页加载旧独立页
+      const href = `/app/materials?project=${encodeURIComponent(projectId)}&source=${encodeURIComponent(sourceId)}`;
       return `<a class="source-citation" href="${href}" data-source-id="${sourceId}" data-citation-number="${number}" title="来源 ${sourceId}" aria-label="查看来源 ${number}：${sourceId}"><sup>${number}</sup></a>`;
     };
 

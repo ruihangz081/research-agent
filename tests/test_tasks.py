@@ -232,6 +232,72 @@ def test_validation_feedback_rejects_completed_without_evidence() -> None:
         )
 
 
+def test_load_feedback_downgrades_completed_without_evidence(
+    tmp_path: Path,
+) -> None:
+    from research_agent.agents.validator import load_feedback
+
+    path = tmp_path / "feedback.json"
+    path.write_text(
+        json.dumps(
+            {
+                "round": 2,
+                "converged": True,
+                "tasks": [
+                    {
+                        "task_id": "t1",
+                        "question_id": "q1",
+                        "description": "补政策文件",
+                        "priority": "critical",
+                        "status": "completed",
+                        "completed_evidence_ids": [],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    feedback = load_feedback(path)
+
+    assert feedback.tasks[0].status == "pending"
+    assert feedback.tasks[0].completed_evidence_ids == []
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["tasks"][0]["status"] == "pending"
+
+
+def test_load_feedback_preserves_completed_with_evidence(tmp_path: Path) -> None:
+    from research_agent.agents.validator import load_feedback
+
+    path = tmp_path / "feedback.json"
+    path.write_text(
+        json.dumps(
+            {
+                "round": 2,
+                "converged": True,
+                "tasks": [
+                    {
+                        "task_id": "t1",
+                        "question_id": "q1",
+                        "description": "补政策文件",
+                        "priority": "critical",
+                        "status": "completed",
+                        "completed_evidence_ids": ["ev-1"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    feedback = load_feedback(path)
+
+    assert feedback.tasks[0].status == "completed"
+    assert feedback.tasks[0].completed_evidence_ids == ["ev-1"]
+
+
 # ═══════════════════════════════════════════════════════════════
 # 与 Orchestrator 收敛门禁的集成
 # ═══════════════════════════════════════════════════════════════

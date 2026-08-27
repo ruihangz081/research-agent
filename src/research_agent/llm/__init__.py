@@ -8,6 +8,7 @@ from .errors import (
     ContextLengthExceededError,
     LLMError,
     ModelNotFoundError,
+    QuotaExhaustedError,
     RateLimitError,
 )
 from .types import (
@@ -29,6 +30,7 @@ __all__ = [
     "ToolDefinition",
     "LLMError",
     "RateLimitError",
+    "QuotaExhaustedError",
     "AuthenticationError",
     "ModelNotFoundError",
     "ContextLengthExceededError",

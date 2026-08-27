@@ -9,6 +9,7 @@
 
   let currentView = null;   // 当前视图名
   let currentDef = null;    // 当前视图模块 { init, destroy }
+  let currentQuery = "";    // 当前视图挂载时的查询串（?project= 等）
   let loading = false;
   let currentController = null; // 视图片段请求的 AbortController
   const fragmentCache = new Map(); // 视图名 -> { html, title }（片段是静态的，缓存后切换零 fetch）
@@ -59,7 +60,9 @@
 
   async function mountView(viewName, { pushState = true } = {}) {
     if (loading) return;
-    if (currentView === viewName) return;
+    // 同视图但查询串变化（如 ?project=A → ?project=B，含前进/后退）时
+    // 必须重新挂载，否则 URL 已变、内容仍是旧项目
+    if (currentView === viewName && currentQuery === window.location.search) return;
     loading = true;
 
     // 命中缓存时无 fetch 空窗，直接换内容，不显示骨架屏（避免闪烁）
@@ -83,6 +86,7 @@
       updateSidebarActive(viewName);
       const previousView = currentView;
       currentView = viewName;
+      currentQuery = window.location.search;
       currentDef = Lumitrace.views.get(viewName);
 
       // 两阶段过渡：旧内容先淡出 → 同步换新内容 → 新内容淡入。

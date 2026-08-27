@@ -258,8 +258,7 @@ async function loadUsage() {
   }
 }
 
-function needsUserInput(project) {  return Boolean(project.checkpoint) || project.stage === "await_clarification";
-}
+function needsUserInput(project) { return Boolean(project.checkpoint) || project.stage === "await_clarification"; }
 
 function matchesFilter(project) {
   if (state.filter === "running") return project.running;
@@ -429,6 +428,8 @@ function destroy() {
   state._tableBound = false;
   state.filter = "all";
   state.query = "";
+  // 视图片段重挂后 Tab 默认回到"每日"，状态也要同步重置，避免 UI 与数据不一致
+  state.usageRange = "daily";
 }
 
 // SPA：注册视图供 router 调用；旧 /research 页面直接初始化。

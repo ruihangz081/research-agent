@@ -218,11 +218,87 @@ class ChartAsset:
     png_path: Path
 
 
+def _normalize_chart_dict(chart: dict[str, Any]) -> dict[str, Any]:
+    """把模型偶发的「语义等价但结构不同」的图表条目归一化为 schema 契约结构。
+
+    模型常凭想象输出两种非契约结构，而契约要求的是另一种布局：
+    - heatmap 常被写成矩阵式 ``x_labels`` + ``y_labels`` + ``values``，契约要求
+      ``labels``（列）+ 每行一个 ``series``（name 为行标签）；
+    - range_bar 常被写成单个 series 内嵌 ``range_lower``/``range_upper``，契约要求
+      恰好两个 series（下限 / 上限）。
+
+    这两种格式的数值都来自正文、只差结构，硬校验 fail-closed 会让整份交付反复
+    作废。因此在加载层做确定性重组：只重新布局模型原始数值，不生成、不换算任何
+    新数字，后续的数值溯源门禁仍逐值校验，防幻觉能力不受影响。
+    """
+    normalized = dict(chart)
+    chart_type = str(normalized.get("type", "")).strip().lower().replace("-", "_")
+
+    if chart_type == "heatmap" and "labels" not in normalized:
+        x_labels = normalized.get("x_labels")
+        y_labels = normalized.get("y_labels")
+        values = normalized.get("values")
+        if (
+            isinstance(x_labels, list)
+            and isinstance(y_labels, list)
+            and isinstance(values, list)
+            and len(values) == len(y_labels)
+        ):
+            series: list[dict[str, Any]] = []
+            for row_name, row_values in zip(y_labels, values):
+                if isinstance(row_values, list):
+                    series.append(
+                        {
+                            "name": str(row_name),
+                            "values": list(row_values),
+                            "value_kind": ["estimate"] * len(row_values),
+                        }
+                    )
+            normalized["labels"] = list(x_labels)
+            normalized["series"] = series
+            normalized.pop("x_labels", None)
+            normalized.pop("y_labels", None)
+            normalized.pop("values", None)
+
+    if chart_type == "range_bar":
+        series = normalized.get("series")
+        if isinstance(series, list) and len(series) == 1 and isinstance(series[0], dict):
+            only = series[0]
+            lower = only.get("range_lower")
+            upper = only.get("range_upper")
+            if (
+                isinstance(lower, list)
+                and isinstance(upper, list)
+                and len(lower) == len(upper)
+            ):
+                kinds = only.get("value_kind")
+                if not isinstance(kinds, list) or len(kinds) != len(lower):
+                    kinds = ["forecast"] * len(lower)
+                normalized["series"] = [
+                    {"name": "下限", "values": list(lower), "value_kind": list(kinds)},
+                    {"name": "上限", "values": list(upper), "value_kind": list(kinds)},
+                ]
+            for item in normalized["series"]:
+                if isinstance(item, dict):
+                    item.pop("range_lower", None)
+                    item.pop("range_upper", None)
+
+    return normalized
+
+
 def load_chart_manifest(path: Path, *, max_charts: int | None = None) -> ChartManifest:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"无法读取图表清单 {path}: {exc}") from exc
+    # 加载前先做确定性归一化，把矩阵式 heatmap / 单序列 range_bar 重组为契约结构。
+    if isinstance(data, dict):
+        charts = data.get("charts")
+        if isinstance(charts, list):
+            data["charts"] = [
+                _normalize_chart_dict(chart) if isinstance(chart, dict) else chart
+                for chart in charts
+            ]
     manifest = ChartManifest.model_validate(data)
     limit = config.REPORT_MAX_CHARTS if max_charts is None else max_charts
     if len(manifest.charts) > limit:
@@ -332,6 +408,22 @@ def _resolve_orientation(chart: ChartSpec) -> str:
     if len(chart.labels) > 6 or total_width > 36 or max_label > 8:
         return "horizontal"
     return "vertical"
+
+
+def _legend_loc(position: str) -> str:
+    """把 schema 里的 legend_position 语义值映射到 matplotlib 合法 loc。
+
+    schema 允许 ``auto/top/right/none``，但 matplotlib 的 ``loc`` 不接受 ``top``/
+    ``right`` 这类简称（合法值如 ``upper left``/``upper right``/``best``）。这里做
+    确定性映射：``auto``→``best``，``top``→``upper center``，``right``→``center right``。
+    ``none`` 由调用方提前 return，不会走到本函数。
+    """
+    mapping = {
+        "auto": "best",
+        "top": "upper center",
+        "right": "center right",
+    }
+    return mapping.get(position, "best")
 
 
 def _draw_matplotlib(chart: ChartSpec, output_dir: Path, theme: dict[str, Any]) -> ChartAsset:
@@ -601,9 +693,9 @@ def _draw_matplotlib(chart: ChartSpec, output_dir: Path, theme: dict[str, Any]) 
                 ha="left", va="top", fontsize=8.5, color=theme["muted_color"],
                 linespacing=1.6)
         if chart.type not in {"combo", "scatter", "heatmap", "waterfall", "range_bar"} and len(chart.series) > 1:
-            legend_pos = "best" if chart.visual.legend_position == "auto" else chart.visual.legend_position
-            if chart.visual.legend_position != "none":
-                ax.legend(frameon=False, loc=legend_pos if legend_pos != "right" else "best",
+            legend_position = chart.visual.legend_position
+            if legend_position != "none":
+                ax.legend(frameon=False, loc=_legend_loc(legend_position),
                           ncols=min(len(chart.series), 3))
         for spine in ("top", "right"):
             ax.spines[spine].set_visible(False)

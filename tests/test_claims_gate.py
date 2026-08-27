@@ -233,9 +233,14 @@ def test_critical_claim_with_unverified_evidence_blocks(
     assert any("非 SUPPORTED" in error for error in errors)
 
 
-def test_claim_question_id_must_match_evidence_question_id(
+def test_claim_question_id_mismatch_is_warning_not_blocker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """证据与 claim 的 question_id 不一致只留痕为 warning，不再阻断。
+
+    证据存在且 SUPPORTED 已满足防幻觉核心要求；跨问题挂证据多是模型归类的噪声，
+    硬阻断会反复作废整轮。归类偏差应通过 warnings 通道观测，而非 fail-closed。
+    """
     state = _state(tmp_path, monkeypatch)
     _record_evidence(state, evidence_id="ev-1", question_id="q2", status=VerificationStatus.SUPPORTED)
     claims = ClaimsFile(
@@ -247,11 +252,20 @@ def test_claim_question_id_must_match_evidence_question_id(
                 "importance": "critical",
                 "text": "营收 4200 万",
                 "supporting_evidence_ids": ["ev-1"],
-            }
+            },
+            {
+                "claim_id": "c2",
+                "question_id": "q2",
+                "kind": "judgment",
+                "importance": "major",
+                "text": "增长由价格驱动",
+            },
         ]
     )
-    errors = validate_claims(claims, state.project_dir, _repository())
-    assert any("不一致" in error for error in errors)
+    warnings: list[str] = []
+    errors = validate_claims(claims, state.project_dir, _repository(), warnings=warnings)
+    assert errors == []
+    assert any("不一致" in warning for warning in warnings)
 
 
 def test_missing_required_question_blocks(
@@ -369,6 +383,25 @@ def test_claim_matching_analysis_ignores_citations_and_emphasis(
         "[src:src_a:v1, ev=ev-1, chunk=chk_a, p.1]\n\n"
         "增长由价格\n驱动。\n"
     )
+
+    errors = validate_claims(
+        _two_question_claims(),
+        state.project_dir,
+        _repository(),
+        analysis_text=analysis,
+    )
+
+    assert errors == []
+
+
+def test_claim_matching_analysis_ignores_unexpanded_evidence_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Agent4 落盘时使用的 ``[ev=...]`` 标记不得破坏正文原句匹配。"""
+    state = _state(tmp_path, monkeypatch)
+    _record_evidence(state, evidence_id="ev-1", question_id="q1", status=VerificationStatus.SUPPORTED)
+    marker = "[ev=ev_0123456789abcdef0123456789abcdef]"
+    analysis = f"# 分析\n\n营收 4200 万 {marker}。\n\n增长由价格驱动。\n"
 
     errors = validate_claims(
         _two_question_claims(),
@@ -588,6 +621,111 @@ def test_composed_report_extra_text_appended_blocks(tmp_path: Path) -> None:
         "# 分析\n\n营收 4200 万。\n\n## 可追溯证据索引\n\n- 证据一\n",
         encoding="utf-8",
     )
-
     with pytest.raises(RuntimeError, match="与 Agent4 正文不一致"):
         formatter._audit_composed_report(analysis_path, report_path, _manifest())
+
+
+# ═══════════════════════════════════════════════════════════════
+# sanitize_claims：确定性清洗，降级不阻断
+# ═══════════════════════════════════════════════════════════════
+
+
+def test_sanitize_claims_drops_claim_absent_from_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """清洗会把正文里不存在的 claim 删除并记 warning，而不是阻断。"""
+    from research_agent.sources.claims import sanitize_claims
+
+    state = _state(tmp_path, monkeypatch)
+    _record_evidence(state, evidence_id="ev-1", question_id="q1", status=VerificationStatus.SUPPORTED)
+    claims = ClaimsFile(
+        claims=[
+            {
+                "claim_id": "c1",
+                "question_id": "q1",
+                "kind": "fact",
+                "importance": "critical",
+                "text": "营收 4200 万",
+                "supporting_evidence_ids": ["ev-1"],
+            },
+            {
+                "claim_id": "c2",
+                "question_id": "q1",
+                "kind": "judgment",
+                "importance": "major",
+                "text": "正文里没有这句结论",
+            },
+        ]
+    )
+    result = sanitize_claims(
+        claims, state.project_dir, _repository(), analysis_text="营收 4200 万。"
+    )
+    assert result.claims is not None
+    assert [c.claim_id for c in result.claims.claims] == ["c1"]
+    assert "c2" in result.dropped_claim_ids
+    assert any("找不到对应" in w for w in result.warnings)
+
+
+def test_sanitize_claims_drops_invalid_evidence_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """清洗会移除不存在的证据引用；critical claim 无有效证据则整条删除。"""
+    from research_agent.sources.claims import sanitize_claims
+
+    state = _state(tmp_path, monkeypatch)
+    _record_evidence(state, evidence_id="ev-1", question_id="q1", status=VerificationStatus.SUPPORTED)
+    claims = ClaimsFile(
+        claims=[
+            {
+                "claim_id": "c1",
+                "question_id": "q1",
+                "kind": "fact",
+                "importance": "critical",
+                "text": "营收 4200 万",
+                "supporting_evidence_ids": ["ev-does-not-exist"],
+            },
+            {
+                "claim_id": "c2",
+                "question_id": "q1",
+                "kind": "fact",
+                "importance": "major",
+                "text": "营收 4200 万",
+                "supporting_evidence_ids": ["ev-does-not-exist", "ev-1"],
+            },
+        ]
+    )
+    result = sanitize_claims(
+        claims, state.project_dir, _repository(), analysis_text="营收 4200 万。"
+    )
+    assert result.claims is not None
+    # c1 是 critical 且唯一证据失效 → 整条删除；c2 移除失效引用后保留 ev-1
+    assert [c.claim_id for c in result.claims.claims] == ["c2"]
+    assert result.claims.claims[0].supporting_evidence_ids == ["ev-1"]
+    assert "c1" in result.dropped_claim_ids
+
+
+def test_sanitize_claims_disabled_when_missing_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """缺需求清单时清洗返回 None（claims 能力关闭），由调用方降级。"""
+    from research_agent.sources.claims import sanitize_claims
+
+    state = ProjectState(topic="no plan", date_str="20260730")
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(config, "SOURCE_DATA_DIR", tmp_path / "sources")
+    reset_runtime()
+    state.save()
+    claims = ClaimsFile(
+        claims=[
+            {
+                "claim_id": "c1",
+                "question_id": "q1",
+                "kind": "judgment",
+                "importance": "major",
+                "text": "增长由价格驱动",
+            }
+        ]
+    )
+    result = sanitize_claims(claims, state.project_dir, _repository())
+    assert result.claims is None
+    assert any("需求清单" in w for w in result.warnings)

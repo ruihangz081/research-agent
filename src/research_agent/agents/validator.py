@@ -68,15 +68,24 @@ def load_feedback(path: Path) -> ValidationFeedback:
 
     Agent 输出偶尔会把纯分析任务的独立来源数写成 0。任务台账不允许绕过
     证据门槛，因此在模型输出边界保守提升为 1；严格的持久化模型仍保持
-    ``ge=1``，其他结构错误继续 fail-closed。
+    ``ge=1``。模型也可能把任务标为 completed 却遗漏证据 ID；这种完成声明
+    无法成立，因此在同一边界保守降级为 pending，而不是猜测或补造证据。
+    其他结构错误继续 fail-closed。
     """
     data = json.loads(path.read_text(encoding="utf-8"))
-    normalized = []
+    normalized_source_counts: list[int] = []
+    downgraded_completions: list[int] = []
     tasks = data.get("tasks") if isinstance(data, dict) else None
     if isinstance(tasks, list):
         for index, task in enumerate(tasks):
             if not isinstance(task, dict):
                 continue
+            if task.get("status") == "completed" and not task.get(
+                "completed_evidence_ids"
+            ):
+                task["status"] = "pending"
+                task["completed_evidence_ids"] = []
+                downgraded_completions.append(index)
             value = task.get("required_independent_sources")
             if isinstance(value, bool):
                 continue
@@ -86,18 +95,29 @@ def load_feedback(path: Path) -> ValidationFeedback:
                 continue
             if source_count < 1:
                 task["required_independent_sources"] = 1
-                normalized.append(index)
+                normalized_source_counts.append(index)
 
     feedback = ValidationFeedback(**data)
-    if normalized:
+    if normalized_source_counts or downgraded_completions:
         path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        locations = ", ".join(f"tasks.{index}" for index in normalized)
+    if normalized_source_counts:
+        locations = ", ".join(
+            f"tasks.{index}" for index in normalized_source_counts
+        )
         console.print(
             "[yellow]反馈任务的 required_independent_sources 小于 1，"
             f"已按最低证据门槛纠正为 1：{locations}[/yellow]"
+        )
+    if downgraded_completions:
+        locations = ", ".join(
+            f"tasks.{index}" for index in downgraded_completions
+        )
+        console.print(
+            "[yellow]反馈任务缺少 completed_evidence_ids，"
+            f"已保守降级为 pending：{locations}[/yellow]"
         )
     return feedback
 

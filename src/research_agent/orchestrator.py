@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import traceback
@@ -34,15 +35,17 @@ from rich.console import Console
 from . import checkpoints, config, research_plan, token_usage
 from .agent_loop import AgentLoopStuckError
 from .agents import analyst, collector, formatter, strategist, validator
+from .llm import QuotaExhaustedError
 from .pipeline_errors import (
     DETERMINISTIC_CONTENT_HINT,
     DeterministicContentError,
     PipelineError,
+    PipelinePausedError,
 )
 from .report_formatting import canonicalize_report_text, count_merged_citations
 from .research_plan import ResearchPlanError
 from .sources.citations import audit_analysis_citations
-from .sources.claims import ClaimsError, load_claims_file, validate_claims
+from .sources.claims import ClaimsError, load_claims_file, sanitize_claims, validate_claims
 from .sources.runtime import get_service
 from .sources.tasks import (
     TasksError,
@@ -136,6 +139,15 @@ async def _safe_run(
             # waste model calls and mislabel the blocked stage as an agent crash.
             state.mark_failure(stage_name, str(e))
             raise
+        except QuotaExhaustedError as e:
+            # 固定窗口额度耗尽：重试无意义，进入 paused 等待外部恢复，不落 failed。
+            state.notes["paused"] = True
+            state.notes["pause_reason"] = str(e)
+            state.save()
+            raise PipelinePausedError(
+                f"{stage_name} 因额度耗尽暂停：{e}。"
+                "等待额度恢复后可显式 resume 继续。"
+            ) from e
         except Exception as e:
             last_err = e
             state.mark_failure(stage_name, str(e))  # 每次失败都保存状态，确保不丢数据
@@ -406,6 +418,8 @@ def _validate_analysis_transition(
 
     # R4：结论台账门禁。重要结论必须有 SUPPORTED 证据支撑，覆盖全部必答问题，
     # 且每条结论都能对应到分析报告正文——台账是正文的机读表达，不是额外的结论来源。
+    # 严格校验：失败即 raise，由 run_state_machine 先做一次定向修复，修复仍失败再
+    # 走确定性清洗降级（_sanitize_claims_and_continue），最终不阻断正文交付。
     try:
         claims = load_claims_file(state.project_dir / config.FILE_CLAIMS)
     except ClaimsError as exc:
@@ -413,9 +427,19 @@ def _validate_analysis_transition(
         error = AnalysisBoundaryError(str(exc))
         state.mark_failure("Agent4·结论台账门禁", str(error))
         raise error from exc
+    claim_warnings: list[str] = []
     claim_errors = validate_claims(
-        claims, state.project_dir, service.repository, analysis_text=analysis_text
+        claims,
+        state.project_dir,
+        service.repository,
+        analysis_text=analysis_text,
+        warnings=claim_warnings,
     )
+    if claim_warnings:
+        # 证据跨问题挂载等归类偏差只留痕，不阻断交付。
+        state.notes["analysis_claim_warnings"] = claim_warnings
+    else:
+        state.notes.pop("analysis_claim_warnings", None)
     if claim_errors:
         state.notes["analysis_claim_audit_errors"] = claim_errors
         error = AnalysisBoundaryError(
@@ -434,6 +458,62 @@ def _validate_analysis_transition(
     state.notes.pop("analysis_claim_audit_errors", None)
     state.save()
     return outcome
+
+
+def _sanitize_claims_and_continue(
+    state: ProjectState,
+    analysis_path: Path,
+) -> None:
+    """结论台账修复仍失败时的确定性降级：清洗或关闭 claims 能力，不阻断交付。
+
+    这是 §4.1/§4.3 的兜底：把台账里的软性错误（文本不在正文、question_id 不存在、
+    证据失效、覆盖缺口）确定性清洗成最小安全集合，写入 ``04_claims_sanitized.json``
+    （原始台账不覆盖）；清洗后仍不可用则 ``claims_disabled=true``。无论哪种结果都
+    继续进入 Agent5，绝不因台账阻断正文交付。
+    """
+    service = get_service(config.SOURCE_DATA_DIR)
+    analysis_text = analysis_path.read_text(encoding="utf-8")
+    try:
+        claims = load_claims_file(state.project_dir / config.FILE_CLAIMS)
+    except ClaimsError as exc:
+        state.notes["analysis_claim_audit_errors"] = [str(exc)]
+        state.notes["claims_disabled"] = True
+        state.notes.pop("analysis_claims", None)
+        state.notes.pop("analysis_claim_warnings", None)
+        state.notes.pop("analysis_dropped_claim_ids", None)
+        state.save()
+        logger.warning("结论台账不可用，已关闭 claims 能力继续交付：%s", exc)
+        return
+
+    result = sanitize_claims(
+        claims,
+        state.project_dir,
+        service.repository,
+        analysis_text=analysis_text,
+    )
+    state.notes["analysis_claim_warnings"] = result.warnings
+    state.notes["analysis_dropped_claim_ids"] = result.dropped_claim_ids
+    if result.claims is None:
+        state.notes["claims_disabled"] = True
+        state.notes.pop("analysis_claims", None)
+        state.save()
+        logger.warning("结论台账清洗后仍不可用，已关闭 claims 能力继续交付")
+        return
+
+    sanitized_path = state.project_dir / config.FILE_CLAIMS_SANITIZED
+    sanitized_path.write_text(
+        json.dumps(result.claims.model_dump(), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    state.notes["claims_disabled"] = False
+    state.notes["analysis_claims"] = [
+        {"claim_id": item.claim_id, "question_id": item.question_id,
+         "importance": item.importance, "text": item.text}
+        for item in result.claims.claims
+    ]
+    state.notes.pop("analysis_claim_audit_errors", None)
+    state.clear_failure()
+    state.save()
 
 
 def recover_blocked_delivery(state: ProjectState) -> bool:
@@ -929,6 +1009,14 @@ async def run_pipeline(state: ProjectState, host: PipelineHost | None = None) ->
     state.mark_runner()
     try:
         await run_state_machine(state, host or CliPipelineHost())
+    except PipelinePausedError as e:
+        # 额度耗尽等可恢复等待：不落 failed，只标记 paused，等待外部恢复后 resume。
+        state.save()
+        console.print(
+            f"\n[yellow]⏸ 已暂停：{e}[/yellow]\n"
+            f"[dim]等待额度恢复后运行 `python -m research_agent resume {state.project_dir}`。[/dim]"
+        )
+        raise
     except PipelineError as e:
         # PipelineError 已在 _safe_run 里打印了详细信息，这里只确保失败被记录
         if not state.failed_stage:
@@ -1074,7 +1162,31 @@ async def run_state_machine(state: ProjectState, host: PipelineHost) -> None:
             analysis_path = await _safe_run(
                 "Agent4·深度分析", state, analyst.run_analysis, state,
             )
-            _validate_analysis_transition(state, analysis_path)
+            try:
+                _validate_analysis_transition(state, analysis_path)
+            except AnalysisBoundaryError:
+                # 只有结论台账门禁允许修复后降级；其余（AnalysisOutcome / 引用审计 /
+                # 补研请求）是真实性硬门禁，直接上抛阻断。
+                if state.failed_stage != "Agent4·结论台账门禁":
+                    raise
+                claim_errors = list(
+                    state.notes.get("analysis_claim_audit_errors", [])
+                )
+                host.log("Agent4 正在定向修正结论台账")
+                try:
+                    await _safe_run(
+                        "Agent4·结论台账修正",
+                        state,
+                        analyst.repair_claims,
+                        state,
+                        analysis_path,
+                        claim_errors,
+                    )
+                    _validate_analysis_transition(state, analysis_path)
+                except AnalysisBoundaryError:
+                    # 修复仍失败：确定性清洗 / 关闭 claims，绝不阻断正文交付。
+                    host.log("结论台账修复失败，正在确定性清洗并降级")
+                    _sanitize_claims_and_continue(state, analysis_path)
             state.advance_to(Stage.FORMATTING)
 
         # ================== 阶段 5: Agent5 排版交付 ==================

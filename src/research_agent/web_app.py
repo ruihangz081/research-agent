@@ -22,6 +22,7 @@ from . import config, run_log, token_usage
 from .agent_loop import AgentOptions, run_agent
 from .agents import strategist
 from .llm import ChatMessage, LLMClient
+from .pipeline_errors import PipelinePausedError
 from .orchestrator import (
     CheckpointDecision,
     CheckpointResult,
@@ -47,7 +48,7 @@ from .report_layout import (
     FILE_FINAL_REPORT_TEX,
     generate_typeset_artifacts,
 )
-from .report_formatting import normalize_merged_citations, strip_analysis_annotations
+from .report_formatting import strip_analysis_annotations
 from .research_plan import ResearchPlanError, load_plan_or_none
 from .state import ProjectState, Stage
 from .tools import default_registry
@@ -62,7 +63,7 @@ ENV_PATH = config.PROJECT_ROOT / ".env"
 
 # 静态资源版本号：所有 HTML 里的 ?v= 应引用同一个常量，保证 CSS/JS 只缓存一份。
 # 修改任意 web_static 资源后 bump 此值即可让浏览器刷新缓存。
-STATIC_VERSION = "20260819-usage-tooltip3"
+STATIC_VERSION = "20260825-availability-v2"
 
 # 静态资源长缓存：资源 URL 携带 STATIC_VERSION，改内容即改版本号，
 # 因此可安全缓存较长时间，避免每次 304 revalidate。
@@ -545,18 +546,37 @@ def _read_artifact(path: Path | None) -> str:
     return text
 
 
-def _read_display_artifact(key: str, path: Path | None) -> str:
-    """读取产物用于 Web 预览，分析类 Markdown 剥离内部标注、拆分合并引用。
+def _read_display_artifact(
+    key: str,
+    path: Path | None,
+    *,
+    state: ProjectState | None = None,
+) -> str:
+    """读取产物用于 Web 预览，分析类 Markdown 剥离内部标注、拆分合并引用、展开短引用。
 
     ``04_analysis.md`` 保留原始引用与推导标注供门禁审计，但读者在「深度分析」页
-    看到的应是结论本身，而不是 ``[事实｜src:...]`` 这样的内部 ID 串。拆分后的标准
-    ``[src:...]`` 引用会由前端继续压缩为可点击的 ``[N]`` 上标。
+    看到的应是结论本身，而不是 ``[事实｜ev=ev_xxx]`` 或 ``[ev=ev_xxx]`` 这样的
+    内部 ID 串。拆分后的标准 ``[src:...]`` 引用会由前端继续压缩为可点击的 ``[N]``
+    上标。
     """
     text = _read_artifact(path)
     if not text:
         return text
     if key == "analysis":
-        return strip_analysis_annotations(normalize_merged_citations(text))
+        # 拆分融合式引用（[事实｜src:...] → [事实] [src:...]），并在有证据库上下文时
+        # 把 Agent4 只写的短引用 [ev=ev_xxx] 展开为标准 [src:...] 引用——否则这些内部
+        # ID 会原样显示在「深度分析」页。
+        from .report_formatting import (
+            canonicalize_report_text,
+            strip_analysis_annotations,
+        )
+
+        repository = _source_service.repository if state is not None else None
+        project_id = state.project_dir.name if state is not None else None
+        text = canonicalize_report_text(
+            text, repository=repository, project_id=project_id
+        )
+        return strip_analysis_annotations(text)
     return text
 
 
@@ -676,6 +696,7 @@ def _serialize_state(state: ProjectState) -> dict[str, Any]:
         )
 
     failed = bool(state.failed_stage or state.last_error)
+    paused = bool(state.notes.get("paused"))
     blocked_reason = retry_blocked_reason(state)
     rerun_stages = available_rerun_stages(state)
     return {
@@ -695,6 +716,8 @@ def _serialize_state(state: ProjectState) -> dict[str, Any]:
         "max_collect_rounds": state.max_collect_rounds,
         "converged": state.converged,
         "failed": failed,
+        "paused": paused or job["status"] == "paused",
+        "pause_reason": state.notes.get("pause_reason", ""),
         "failed_stage": state.failed_stage,
         "last_error": state.last_error,
         "retry_count": state.retry_count,
@@ -707,6 +730,12 @@ def _serialize_state(state: ProjectState) -> dict[str, Any]:
         ],
         "quality_gate": state.notes.get("quality_gate"),
         "quality_gate_reasons": state.notes.get("quality_gate_reasons", []),
+        # 降级详情（第一版落地）：done_degraded 状态 + 降级原因 + 台账降级明细
+        "delivery_status": state.notes.get("delivery_status"),
+        "delivery_degradation": state.notes.get("delivery_degradation", []),
+        "claims_disabled": state.notes.get("claims_disabled"),
+        "analysis_claim_warnings": state.notes.get("analysis_claim_warnings", []),
+        "analysis_dropped_claim_ids": state.notes.get("analysis_dropped_claim_ids", []),
         "research_plan": _research_plan_payload(state),
         "research_tasks": _research_tasks_payload(state),
         "clarification_questions": state.notes.get("clarification_questions", []),
@@ -902,6 +931,14 @@ async def _run_until_pause(project_id: str) -> None:
             # 与"证据不足"区分：需要用户先重新确认研究计划，补采无法解决。
             job["status"] = "error"
             _log(project_id, f"研究需求清单缺失，交付已阻断：{exc}")
+        except PipelinePausedError as exc:
+            # 额度耗尽等可恢复等待：不落 failed，标记 paused，等待外部恢复后 resume。
+            job["status"] = "paused"
+            if state is not None:
+                state.notes["paused"] = True
+                state.notes["pause_reason"] = str(exc)
+                state.save()
+            _log(project_id, f"运行已暂停：{exc}")
         except DeliveryBlockedError as exc:
             job["status"] = "idle"
             _log(project_id, f"交付已暂停：{exc}")
@@ -1352,7 +1389,7 @@ async def api_artifact(
                 "key": key,
                 "label": label,
                 "exists": bool(path and path.exists()),
-                "content": _read_display_artifact(key, path),
+                "content": _read_display_artifact(key, path, state=state),
                 "name": path.name if path else "",
                 "version": _artifact_version(path),
             }

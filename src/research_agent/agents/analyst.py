@@ -35,6 +35,7 @@ ANALYST_ALLOWED_TOOLS = (
     "ListProjectSources",
     "InspectSourceEvidence",
 )
+CLAIMS_REPAIR_ALLOWED_TOOLS = ("Read", "Write")
 
 
 class AnalysisOutcomeError(RuntimeError):
@@ -202,7 +203,8 @@ async def run_analysis(state: "ProjectState") -> Path:
                 f"请仅基于 system prompt 中的 SUPPORTED EvidenceRecord 目录，"
                 f"对「{state.topic}」做深度分析。读取提纲、源清单和验证报告时，"
                 f"不得把其中未经验证的内容作为事实。将报告写入 `{analysis_path}`，"
-                f"并将 AnalysisOutcome 写入 `{outcome_path}`。"
+                f"将 AnalysisOutcome 写入 `{outcome_path}`，并将与报告正文逐字对应的"
+                f"结论台账写入 `{claims_path}`。"
             ),
             options=options,
             llm_client=client,
@@ -217,3 +219,71 @@ async def run_analysis(state: "ProjectState") -> Path:
         raise RuntimeError(f"Agent4 未能生成结论台账：{claims_path}")
     console.print(f"\n[green]✓ 深度分析完成：{analysis_path.name}[/green]")
     return analysis_path
+
+
+async def repair_claims(
+    state: "ProjectState",
+    analysis_path: Path,
+    audit_errors: list[str],
+) -> Path:
+    """只修正 Agent4 的机读结论台账，不改动已经生成的分析正文。"""
+    claims_path = state.project_dir / config.FILE_CLAIMS
+    if not analysis_path.is_file():
+        raise RuntimeError(f"无法修正结论台账：分析报告不存在：{analysis_path}")
+
+    error_summary = "\n".join(f"- {item}" for item in audit_errors)
+    system_prompt = f"""你是 Agent4 的结论台账校正器。分析报告已经完成且不可修改；
+你只能读取文件，并且只能重写 `{claims_path}`。不得改写 `{analysis_path}`、
+`{state.project_dir / config.FILE_ANALYSIS_OUTCOME}` 或任何其他文件。
+
+请读取 `{analysis_path}` 和现有的 `{claims_path}`，重新生成严格 JSON：
+{{"schema_version":"1.0","claims":[...]}}。
+
+硬性规则：
+1. 每条 claim.text 必须对应分析报告中的一个连续结论片段：可以去掉正文里的 Markdown
+   强调、来源引用和置信度标注，也可以微调连接词与语序，但关键数字必须与正文一致，
+   不得摘要、拼接或新增数字；核心语义必须来自正文，不得新增结论。
+2. 每个固定 question_id 至少一条 claim；claim_id 必须唯一。
+3. supporting_evidence_ids 只能使用下方 SUPPORTED 目录中的 ID；尽量选择与
+   claim.question_id 同 question 的证据，若没有完全同 question 的证据，可以挂
+   语义最接近的同证据（evidence 必须真实且 SUPPORTED），不要伪造证据。
+4. critical claim 至少挂一条 SUPPORTED 证据；无法满足时应选择正文中
+   另一条能够满足的结论，不得伪造证据。
+5. kind 只能是 fact/derivation/judgment，importance 只能是 critical/major/minor，
+   confidence 只能是 high/medium/low。
+6. 只保留覆盖固定研究问题和核心判断所需的最小 claim 集合；不要机械保留原有 26 条。
+
+上一次确定性审计错误：
+{error_summary}
+"""
+    system_prompt += plan_prompt_context(state)
+    system_prompt += analyst_evidence_context(state)
+
+    options = AgentOptions(
+        system_prompt=system_prompt,
+        model=config.LLM_MODEL,
+        allowed_tools=list(CLAIMS_REPAIR_ALLOWED_TOOLS),
+        cwd=str(state.project_dir),
+        max_turns=15,
+        stream=False,
+    )
+    async with LLMClient(
+        base_url=config.LLM_BASE_URL,
+        api_key=config.LLM_API_KEY,
+        model=config.LLM_MODEL,
+        timeout=config.LLM_TIMEOUT,
+        max_retries=config.LLM_MAX_RETRIES,
+    ) as client:
+        await run_agent(
+            user_prompt=(
+                f"修正 `{claims_path}`。先读取完整分析报告，再写入最小、逐字对应且"
+                "问题—证据归属一致的结论台账。不要修改分析报告。"
+            ),
+            options=options,
+            llm_client=client,
+            tool_registry=default_registry,
+        )
+
+    if not claims_path.is_file():
+        raise RuntimeError(f"结论台账校正未生成文件：{claims_path}")
+    return claims_path

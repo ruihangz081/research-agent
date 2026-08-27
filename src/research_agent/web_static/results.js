@@ -2,7 +2,7 @@
 const IS_SPA = window.location.pathname.startsWith("/app");
 
 const $ = (id) => document.getElementById(id);
-const state = { projectId: Lumitrace.selectedProject(), projects: [], project: null, artifacts: [], selectedKey: null, _listBound: false };
+const state = { projectId: Lumitrace.selectedProject(), projects: [], project: null, artifacts: [], selectedKey: null, events: null, _rafId: 0, _fallbackTimer: 0, _listBound: false };
 
 function decorateIcons() {
   [$("pdfIcon"), $("texIcon")].forEach((item) => { item.innerHTML = Lumitrace.icon("download", 17); });
@@ -47,11 +47,46 @@ function updateDelivery() {
   $("downloadPdf").disabled = !exists("final_report");
   $("typeset").disabled = !exists("final_report") || state.project?.running;
   $("downloadTex").disabled = !exists("final_report_tex");
-  const complete = state.project?.stage === "done";
-  $("generationStatus").innerHTML = `<span class="status-pill ${complete ? "success" : ""}"><i class="status-dot ${complete ? "success" : "running"}"></i>${complete ? "已完成" : "生成中"}</span>`;
-  $("generationMeter").style.width = complete ? "100%" : `${Math.max(8, (state.project ? state.project.collect_round / Math.max(1, state.project.max_collect_rounds) * 70 : 0))}%`;
-  $("deliveryWarning").classList.toggle("hidden", !exists("final_report") || exists("final_report_tex"));
-  $("deliveryWarning").innerHTML = "正式排版尚未生成，可点击“生成 / 刷新正式版”。";
+  const project = state.project;
+  // 状态卡片要反映真实运行状态：失败/等待确认/已暂停/降级完成都不是"生成中"
+  const status = project?.stage === "done"
+    ? (project?.delivery_status === "done_degraded"
+      ? { pill: "warning", dot: "warning", label: "已降级完成" }
+      : { pill: "success", dot: "success", label: "已完成" })
+    : project?.paused
+      ? { pill: "warning", dot: "warning", label: "已暂停（额度/限流）" }
+      : project?.failed && !project.running
+        ? { pill: "danger", dot: "danger", label: "生成失败" }
+        : project?.running
+          ? { pill: "", dot: "running", label: "生成中" }
+          : project?.checkpoint || String(project?.stage || "").startsWith("await_")
+            ? { pill: "warning", dot: "warning", label: "等待确认" }
+            : { pill: "", dot: "neutral", label: "已暂停" };
+  $("generationStatus").innerHTML = `<span class="status-pill ${status.pill}"><i class="status-dot ${status.dot}"></i>${status.label}</span>`;
+  const progress = project ? project.collect_round / Math.max(1, project.max_collect_rounds) : 0;
+  $("generationMeter").style.width = project?.stage === "done" ? "100%" : `${Math.max(8, progress * 70)}%`;
+  renderDegradation();
+  const warning = $("deliveryWarning");
+  const showWarning = exists("final_report") && !exists("final_report_tex");
+  warning.classList.toggle("hidden", !showWarning);
+  if (showWarning) warning.textContent = "正式排版尚未生成，可点击“生成 / 刷新正式版”。";
+}
+
+// 降级详情：done_degraded / claims 降级 / 暂停原因都在这里展开展示
+function renderDegradation() {
+  const project = state.project;
+  const reasons = [];
+  if (project?.delivery_status === "done_degraded") reasons.push("报告已生成，部分结论台账、图表或 PDF 已降级，不影响正文阅读。");
+  if (project?.claims_disabled === true) reasons.push("结论台账不可用，已关闭台账能力。");
+  if (Array.isArray(project?.delivery_degradation)) reasons.push(...project.delivery_degradation);
+  if (project?.analysis_dropped_claim_ids?.length) reasons.push(`${project.analysis_dropped_claim_ids.length} 条 claim 已移除：${project.analysis_dropped_claim_ids.join("、")}`);
+  if (Array.isArray(project?.analysis_claim_warnings) && project.analysis_claim_warnings.length) reasons.push(`${project.analysis_claim_warnings.length} 条台账警告（详见成果）。`);
+  if (project?.paused && project?.pause_reason) reasons.push(`暂停原因：${project.pause_reason}`);
+  const box = $("degradationBox");
+  if (!box) return;
+  const hasReasons = reasons.length > 0;
+  box.classList.toggle("hidden", !hasReasons);
+  if (hasReasons) box.innerHTML = reasons.map((r) => `<div class="degradation-row">${Lumitrace.escapeHtml(r)}</div>`).join("");
 }
 
 async function loadPreview() {
@@ -82,20 +117,63 @@ async function loadPreview() {
 async function loadProject() {
   if (!state.projectId) return showEmpty();
   try {
+    const previous = state.artifacts.find((item) => item.key === state.selectedKey);
     state.project = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}`);
     state.artifacts = state.project.artifacts;
-    const firstExisting = state.artifacts.find((item) => item.key === "final_report" && item.exists) || state.artifacts.find((item) => item.exists) || state.artifacts[0];
-    state.selectedKey = firstExisting?.key || null;
+    // 保留用户当前选择；仅在选择失效（或首次进入）时回退到优先成果
+    if (!state.artifacts.some((item) => item.key === state.selectedKey)) {
+      const firstExisting = state.artifacts.find((item) => item.key === "final_report" && item.exists) || state.artifacts.find((item) => item.exists) || state.artifacts[0];
+      state.selectedKey = firstExisting?.key || null;
+    }
     $("resultsEmpty").classList.add("hidden");
     $("resultsContent").classList.remove("hidden");
-    renderList(); updateDelivery(); await loadPreview();
+    renderList(); updateDelivery();
+    // SSE 高频刷新时，所选产物未变化就不重复拉取大报告
+    const current = state.artifacts.find((item) => item.key === state.selectedKey);
+    if (!previous || previous.key !== current?.key || previous.exists !== current?.exists || previous.version !== current?.version) await loadPreview();
   } catch (error) {
+    disconnectEvents();
     $("resultsEmpty").innerHTML = `<span class="empty-symbol">!</span><strong>成果加载失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p>`;
     showEmpty();
   }
 }
 
 function showEmpty() { $("resultsEmpty").classList.remove("hidden"); $("resultsContent").classList.add("hidden"); }
+
+// 与工作区一致：SSE 增量推送 + rAF 合并刷新 + 断线降级轮询，
+// 保证生成状态、进度条和成果列表在研究运行期间实时更新。
+function scheduleRefresh() {
+  if (state._rafId) return;
+  state._rafId = window.requestAnimationFrame(() => {
+    state._rafId = 0;
+    if (state.projectId) loadProject();
+  });
+}
+
+function clearFallback() {
+  if (state._fallbackTimer) { window.clearInterval(state._fallbackTimer); state._fallbackTimer = 0; }
+}
+
+function startFallback() {
+  if (state._fallbackTimer) return;
+  state._fallbackTimer = window.setInterval(() => { if (state.projectId) loadProject(); }, 3000);
+}
+
+function connectEvents() {
+  disconnectEvents();
+  if (!state.projectId) return;
+  const source = new EventSource(`/api/projects/${encodeURIComponent(state.projectId)}/events`);
+  source.addEventListener("update", scheduleRefresh);
+  source.addEventListener("open", clearFallback);
+  source.addEventListener("error", startFallback);
+  state.events = source;
+}
+
+function disconnectEvents() {
+  if (state.events) { try { state.events.close(); } catch (_) {} state.events = null; }
+  if (state._rafId) { window.cancelAnimationFrame(state._rafId); state._rafId = 0; }
+  clearFallback();
+}
 
 async function initialize() {
   try {
@@ -125,20 +203,22 @@ async function typeset() {
 }
 
 function bindEvents() {
-  $("projectSelect").addEventListener("change", () => { state.projectId = $("projectSelect").value; Lumitrace.rememberProject(state.projectId); loadProject(); });
+  $("projectSelect").addEventListener("change", () => { state.projectId = $("projectSelect").value; Lumitrace.rememberProject(state.projectId); state.selectedKey = null; loadProject(); connectEvents(); });
   $("typeFilter").addEventListener("change", () => { renderList(); loadPreview(); });
   $("downloadPdf").addEventListener("click", () => openDownload("/download/final-report.pdf"));
   $("typeset").addEventListener("click", typeset);
   $("downloadTex").addEventListener("click", () => openDownload("/download/final-report.tex"));
 }
 
-function init() {
+async function init() {
   decorateIcons();
   bindEvents();
-  initialize();
+  await initialize();
+  connectEvents();
 }
 
 function destroy() {
+  disconnectEvents();
   state.project = null;
   state.artifacts = [];
   state.selectedKey = null;

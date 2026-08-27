@@ -408,6 +408,8 @@ label > span { color: #53617c; font-size: 12px; font-weight: 700; }
 .source-detail-actions .button { flex: 0 0 auto; }
 .inspector-preview { white-space: pre-wrap; color: #53617b; font-family: inherit; font-size: 12px; line-height: 1.75; }
 .warning-box { border: 1px solid #f4d9b7; border-radius: 10px; background: #fffbf4; color: #a76b27; padding: 12px; font-size: 12px; }
+.degradation-row { padding: 2px 0; line-height: 1.6; }
+.degradation-row + .degradation-row { border-top: 1px dashed #f0e2cd; }
 .detail-list { display: grid; gap: 11px; }
 .detail-row { display: grid; grid-template-columns: 88px 1fr; gap: 10px; font-size: 12px; }
 .detail-row span:first-child { color: var(--muted); }

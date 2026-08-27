@@ -29,4 +29,22 @@
 - 可选声明式字段：`visual`（orientation/show_values/highlight_labels/highlight_series/number_format/legend_position）、`reference_lines`、`bands`、`callouts`。均为声明式意图，禁止任何可执行绘图代码或物理坐标。
 - 图表类型支持 `line`、`bar`、`stacked_bar`、`combo`、`scatter`、`heatmap`、`waterfall`、`horizontal_bar`、`range_bar`。
 
+### 每个图表条目的必填字段（缺一不可）
+
+- `id`：小写字母/数字/下划线/连字符，唯一。
+- `type`：上面的类型之一。
+- `title`、`unit`、`as_of_date`（`YYYY-MM-DD`）、`source`。
+- `labels`：字符串数组，是横轴（或横向图的纵轴）类别，不得重复。
+- `series`：对象数组，**每个 series 必须含 `name`、`values`（与 `labels` 等长的数字数组）、`value_kind`（与 `values` 等长，取值 `actual`/`forecast`/`estimate`）**。
+- `placement_after`：逐字复制正文中唯一的一整行（优先 Markdown 标题）。
+
+### 各类型结构要点（按此输出，不要用其他字段名）
+
+- `line` / `bar` / `horizontal_bar` / `stacked_bar`：常规 `labels` + 一个或多个 `series`。
+- `combo`：第一个 series 用柱，其余 series 用线（双轴）；仍用 `labels` + `series`。
+- `scatter`：两个 series（第 1 个为 X，第 2 个为 Y），或单个 series 加 `x_values`；`labels` 为点标签。
+- `heatmap`：**`labels` 是列标签（横轴），每个 `series` 是一行**——`name` 是行标签，`values` 是与 `labels` 等长的一行数值。不要用 `x_labels`/`y_labels`/`values` 矩阵式。
+- `range_bar`：**恰好两个 `series`**，第 1 个是下限、第 2 个是上限，`values` 各自与 `labels` 等长。不要用单个 series 内嵌 `range_lower`/`range_upper`。
+- `waterfall`：单个 series，`values` 是各段增减量。
+
 完成后只需简短确认图表清单已生成。

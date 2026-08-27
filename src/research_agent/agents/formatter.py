@@ -186,10 +186,11 @@ def _can_reuse_chart_manifest(
     chart_manifest_path: Path,
     analysis_path: Path,
 ) -> bool:
-    """Reuse only a current manifest whose charts have deterministic anchors.
+    """复用当前有效的图表清单，避免重复调用 LLM 生成。
 
-    复用检查必须真正校验每个锚点在正文中唯一匹配——坏锚点会跳过 LLM 却在
-    ``_compose_final_report_from_analysis`` 报错，浪费整轮。
+    锚点位置漂移（多打/少打 #、行首缩进、匹配多行）不再构成复用障碍——``_resolve_anchor_index``
+    会降级插入到文末，不会作废整轮。因此这里只校验清单可解析、时间戳不早于正文，
+    以及每条图都有非空 placement_after（空锚点会降级到文末，虽可用但提示 LLM 重新生成更合适）。
     """
     if not (
         chart_manifest_path.is_file()
@@ -203,40 +204,68 @@ def _can_reuse_chart_manifest(
     except (ValueError, OSError, DeterministicContentError):
         return False
     try:
-        analysis = analysis_path.read_text(encoding="utf-8")
+        analysis_path.read_text(encoding="utf-8")
     except OSError:
         return False
-    lines = analysis.splitlines(keepends=True)
     for chart in manifest.charts:
         if not chart.placement_after:
-            return False
-        matches = [
-            line for line in lines if line.rstrip("\r\n") == chart.placement_after
-        ]
-        if len(matches) != 1:
             return False
     return True
 
 
-def _validate_placement_anchors(
-    analysis_path: Path,
-    manifest: ChartManifest,
-) -> None:
-    """锚点匹配数≠1 时抛 DeterministicContentError，不落进 except Exception 重试。"""
-    analysis = analysis_path.read_text(encoding="utf-8")
-    lines = analysis.splitlines(keepends=True)
-    for chart in manifest.charts:
-        anchor = chart.placement_after
-        if not anchor:
-            raise DeterministicContentError(
-                f"chart {chart.id} 缺少 placement_after（{DETERMINISTIC_CONTENT_HINT}）"
-            )
-        matches = [line for line in lines if line.rstrip("\r\n") == anchor]
-        if len(matches) != 1:
-            raise DeterministicContentError(
-                f"chart {chart.id} 的 placement_after 必须逐字匹配 Agent4 中唯一一行："
-                f"当前匹配 {len(matches)} 行（{DETERMINISTIC_CONTENT_HINT}）"
-            )
+def _anchor_matches(anchor: str, lines: list[str]) -> list[int]:
+    """返回 anchor 逐字匹配的行索引（忽略行首/行尾空白）。
+
+    placement_after 是模型从 Agent4 正文复制的一整行。正文行首常有 Markdown 缩进
+    （如 ``  **加粗行**``），模型复制锚点时偶发丢掉行首空格，导致 ``line.rstrip()``
+    匹配 0 行。因此两侧 strip 后再比对。
+    """
+    target = anchor.strip()
+    return [
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == target
+    ]
+
+
+def _resolve_anchor_index(anchor: str | None, lines: list[str]) -> int:
+    """把图表锚点解析成正文中的插入行索引；解析不到时降级到文末，绝不阻断。
+
+    锚点只是「图表放哪」的排版提示，不是事实正确性门禁。模型偶发多打/少打一个
+    Markdown ``#``、或复制到行首缩进，就把锚点判成「不唯一/不存在」并作废整轮、
+    重跑 LLM，代价远大于「图表位置略有偏移」。因此这里按宽松优先级解析：
+
+    1. 两侧 strip 后逐字唯一匹配 → 精确插入该行后；
+    2. 唯一匹配失败（0 行或多行）→ 忽略 Markdown 标题 ``#`` 前缀再匹配一次；
+    3. 仍失败 → 降级到文末（最后一行之后）。
+
+    任何情况下都返回一个合法行索引，调用方不再因锚点问题抛异常。
+    """
+    if anchor is None or not anchor.strip():
+        return len(lines) - 1
+    target = anchor.strip()
+
+    exact = _anchor_matches(target, lines)
+    if len(exact) == 1:
+        return exact[0]
+
+    # 忽略 Markdown 标题符号（#）与两侧空白后再匹配，容忍模型多打/少打 # 层级。
+    def _norm(value: str) -> str:
+        return value.strip().lstrip("#").strip()
+
+    normalized = _norm(target)
+    fuzzy = [
+        index
+        for index, line in enumerate(lines)
+        if _norm(line) == normalized
+    ]
+    if len(fuzzy) == 1:
+        return fuzzy[0]
+    if len(fuzzy) > 1:
+        return fuzzy[0]
+
+    # 多匹配或完全匹配不到：降级到文末，保证图表仍能插入、报告仍能交付。
+    return len(lines) - 1
 
 
 def _compose_final_report_from_analysis(
@@ -251,21 +280,8 @@ def _compose_final_report_from_analysis(
 
     for chart in manifest.charts:
         anchor = chart.placement_after
-        if not anchor:
-            raise DeterministicContentError(
-                f"chart {chart.id} 缺少 placement_after（{DETERMINISTIC_CONTENT_HINT}）"
-            )
-        matches = [
-            index
-            for index, line in enumerate(lines)
-            if line.rstrip("\r\n") == anchor
-        ]
-        if len(matches) != 1:
-            raise DeterministicContentError(
-                f"chart {chart.id} 的 placement_after 必须逐字匹配 Agent4 中唯一一行："
-                f"当前匹配 {len(matches)} 行（{DETERMINISTIC_CONTENT_HINT}）"
-            )
-        insertions.setdefault(matches[0], []).append(chart.id)
+        index = _resolve_anchor_index(anchor, lines)
+        insertions.setdefault(index, []).append(chart.id)
 
     newline = "\r\n" if "\r\n" in analysis else "\n"
     output: list[str] = []
@@ -349,11 +365,19 @@ async def run_formatting(state: "ProjectState") -> Path:
     else:
         console.print("[dim]复用已生成的图表清单，重新从 Agent4 正文排版交付。[/dim]")
 
+    degradation: list[str] = []
     if not chart_manifest_path.exists():
-        raise RuntimeError(f"Agent5 未能生成图表清单：{chart_manifest_path}")
-    manifest = load_chart_manifest(
-        chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS
-    )
+        # 图表清单缺失只影响图表，不影响正文交付：降级为空清单 → 无图版报告。
+        degradation.append(f"图表清单缺失，已交付无图版报告：{chart_manifest_path}")
+        manifest = ChartManifest(version=1, charts=[])
+    else:
+        try:
+            manifest = load_chart_manifest(
+                chart_manifest_path, max_charts=config.REPORT_MAX_CHARTS
+            )
+        except Exception as exc:
+            degradation.append(f"图表清单无法解析，已交付无图版报告：{exc}")
+            manifest = ChartManifest(version=1, charts=[])
     _compose_final_report_from_analysis(analysis_path, final_report_path, manifest)
 
     _audit_final_report_citations(
@@ -365,48 +389,66 @@ async def run_formatting(state: "ProjectState") -> Path:
     )
     _audit_composed_report(analysis_path, final_report_path, manifest)
     state.final_report_path = str(final_report_path)
-    state.chart_manifest_path = str(chart_manifest_path)
+    if chart_manifest_path.exists():
+        state.chart_manifest_path = str(chart_manifest_path)
     state.save()
 
     console.print(f"\n[green]✓ 最终报告已生成：{final_report_path.name}[/green]")
 
+    # 多格式独立交付：Markdown 已就绪，HTML/PDF 各自独立降级，任一失败都不阻断。
+    # generate_report_artifacts 内部已把 HTML/PDF 拆成独立 try，失败只进 degradation
+    # 列表，不再抛异常打挂整个 Agent5。
+    console.print("[cyan]正在生成券商研报图表、HTML 与正式 PDF...[/cyan]")
     try:
-        console.print("[cyan]正在生成券商研报图表、HTML 与正式 PDF...[/cyan]")
         artifacts = await generate_typeset_artifacts(
             topic=state.topic,
             project_dir=state.project_dir,
             final_report_path=final_report_path,
         )
-        # chrome 引擎不产出 .tex：artifacts["tex_path"] 为 None，不得写 state 兜底路径
-        # （否则前端会给出一个 404 的下载链接）。
-        state.final_report_tex_path = (
-            str(artifacts["tex_path"]) if artifacts["tex_path"] else None
+    except Exception as exc:
+        # 排版交付物生成失败不阻断正文交付：Markdown 已经就绪，降级为仅 Markdown。
+        state.notes["latex_typeset_error"] = str(exc)
+        degradation.append(f"排版交付物生成失败，已交付 Markdown：{exc}")
+        artifacts = {
+            "tex_path": None,
+            "html_path": None,
+            "pdf_path": None,
+            "degradation": [],
+        }
+    artifacts_degradation = list(artifacts.get("degradation", []))
+    degradation.extend(artifacts_degradation)
+    # chrome 引擎不产出 .tex：artifacts["tex_path"] 为 None，不得写 state 兜底路径
+    # （否则前端会给出一个 404 的下载链接）。
+    state.final_report_tex_path = (
+        str(artifacts["tex_path"]) if artifacts.get("tex_path") else None
+    )
+    state.final_report_html_path = (
+        str(artifacts["html_path"]) if artifacts.get("html_path") else None
+    )
+    state.final_report_pdf_path = (
+        str(artifacts["pdf_path"]) if artifacts.get("pdf_path") else None
+    )
+    if artifacts.get("pdf_path"):
+        state.final_report_typeset_pdf_path = str(artifacts["pdf_path"])
+        console.print(
+            f"[green]✓ 正式 PDF 已生成：{artifacts['pdf_path'].name}[/green]"
         )
-        state.final_report_html_path = str(artifacts["html_path"])
-        state.final_report_pdf_path = (
-            str(artifacts["pdf_path"]) if artifacts["pdf_path"] else None
+    else:
+        console.print(
+            "[yellow]PDF 未生成（HTML/Markdown 仍可用），交付已降级。[/yellow]"
         )
-        if artifacts["pdf_path"]:
-            state.final_report_typeset_pdf_path = str(artifacts["pdf_path"])
-            console.print(
-                f"[green]✓ 正式 PDF 已生成：{artifacts['pdf_path'].name}[/green]"
-            )
-        else:
-            console.print(
-                "[yellow]已生成 HTML 与 LaTeX 源文件；本机未检测到配置的 LaTeX 引擎，"
-                "暂未自动编译 PDF。[/yellow]"
-            )
+
+    # 落降级详情到状态：供 done_degraded 状态与前端展示。
+    if degradation:
+        state.notes["delivery_degradation"] = degradation
+        state.notes["delivery_status"] = "done_degraded"
+    else:
+        state.notes.pop("delivery_degradation", None)
+        state.notes["delivery_status"] = "done"
+        # 无降级时才清除排版错误标记；有降级时保留供诊断。
         state.notes.pop("latex_typeset_error", None)
-        state.save()
-    except DeterministicContentError as e:
-        # 字形缺失、引用 ID 抄错这类确定性内容错误不能被吞成 RuntimeError——
-        # 那会落进 orchestrator 的 except Exception 被无意义重跑。直接原样上抛。
-        state.notes["latex_typeset_error"] = str(e)
-        state.save()
-        raise
-    except Exception as e:
-        state.notes["latex_typeset_error"] = str(e)
-        state.save()
-        raise RuntimeError(f"Agent5 排版交付物生成失败：{e}") from e
+    # 图表降级（溯源失败 → 表格）也在 generate_report_artifacts 内发生，
+    # 通过 provenance report 落到 05_chart_provenance.json，这里只保留 manifest 级降级。
+    state.save()
 
     return final_report_path

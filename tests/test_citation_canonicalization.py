@@ -258,6 +258,41 @@ def test_unknown_ev_id_raises_instead_of_silent_skip(tmp_path: Path) -> None:
         repository.close()
 
 
+def test_web_display_expands_ev_citations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """「深度分析」页展示时，``[ev=ev_xxx]`` 必须展开为标准引用，不泄露内部 ID。
+
+    修复前 ``_read_display_artifact`` 只拆融合式引用、不展开短引用，用户会在
+    深度分析页看到 ``[ev=ev_1718622192894f4c9a5fcdf383341d49]`` 这类内部 ID 串。
+    """
+    from research_agent import web_app
+
+    repository, service, source, evidence = _setup_project(tmp_path)
+    try:
+        monkeypatch.setattr(web_app, "_source_service", service)
+        # 让 state.project_dir.name == "project"，与 _setup_project 的证据库对齐
+        monkeypatch.setattr(
+            config, "project_dir_for", lambda topic, date_str: tmp_path / "project"
+        )
+        state = ProjectState(topic="project", date_str="20260825")
+        analysis = tmp_path / "04_analysis.md"
+        analysis.write_text(
+            f"结论甲 [事实] [ev={evidence.evidence_id}]",
+            encoding="utf-8",
+        )
+
+        display = web_app._read_display_artifact(
+            "analysis", analysis, state=state
+        )
+        # 内部短引用已被展开为标准引用，且不再有 [ev= 残留
+        assert "[ev=" not in display
+        assert "[src:" in display
+        assert evidence.evidence_id in display  # 展开后的标准引用仍携带 ev id
+    finally:
+        repository.close()
+
+
 # ═══════════════════════════════════════════════════════════════
 # P3：确定性内容错误不进阶段级重试
 # ═══════════════════════════════════════════════════════════════
