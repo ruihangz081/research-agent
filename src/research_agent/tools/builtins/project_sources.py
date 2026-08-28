@@ -9,6 +9,8 @@ import uuid
 from typing import Literal
 from urllib.parse import urlsplit
 
+import httpx
+
 from ... import config
 from ...research_plan import known_question_ids
 from ...sources.runtime import get_service
@@ -224,7 +226,16 @@ async def capture_project_web_source(
         source_tier: Evidence tier: S, A, B, D, or unclassified.
         title: Optional human-readable source title.
     """
-    resource = await fetch_web_resource(url)
+    try:
+        resource = await fetch_web_resource(url)
+    except httpx.HTTPStatusError as e:
+        return f"SKIP_SOURCE: {url} 返回 HTTP {e.response.status_code}，跳过该源"
+    except httpx.RequestError as e:
+        return f"SKIP_SOURCE: {url} 请求失败（{e}），跳过该源"
+    except ValueError as e:
+        if "exceeds" in str(e):
+            return f"SKIP_SOURCE: {url} 资源超限，跳过该源：{e}"
+        raise
     effective_tier, tier_adjustment = _effective_web_tier(resource.final_url, source_tier)
     service = _service()
     logical_id = f"web_{hashlib.sha256(resource.final_url.encode('utf-8')).hexdigest()[:24]}"

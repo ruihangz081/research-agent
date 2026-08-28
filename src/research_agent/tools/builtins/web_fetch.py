@@ -131,14 +131,21 @@ async def web_fetch(url: str) -> str:
 
     Args:
         url: The URL to fetch.
+
+    源级失败（HTTP 4xx/5xx、网络中断、资源超限）返回 ``SKIP_SOURCE:`` 前缀的标记，
+    让 Agent2 换下一个源，而不是反复重试同一坏 URL 触发 stuck。URL 本身非法
+    （私网 IP、非 http/https、带凭据）仍返回普通 ``Error:``——那是参数/安全问题，
+    必须让模型停下修正，不能被"跳过"掩盖。
     """
     try:
         resource = await fetch_web_resource(url)
     except httpx.HTTPStatusError as e:
-        return f"Error: HTTP {e.response.status_code} fetching {url}"
+        return f"SKIP_SOURCE: {url} 返回 HTTP {e.response.status_code}，跳过该源"
     except httpx.RequestError as e:
-        return f"Error fetching URL: {e}"
+        return f"SKIP_SOURCE: {url} 请求失败（{e}），跳过该源"
     except ValueError as e:
+        if "exceeds" in str(e):
+            return f"SKIP_SOURCE: {url} 资源超限，跳过该源：{e}"
         return f"Error fetching URL: {e}"
 
     text = resource.text

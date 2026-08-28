@@ -455,6 +455,25 @@ QA 检查在同一段 `try` 里，任何一个抛异常都会 `raise RuntimeErro
 
 - **可选问题证据不足降级**（§2.2，中断点 #8）：`quality.py` 第 91 行**已实现** `if requirement.required` 才触发 `missing_required`——非必答问题证据不足不会阻断，无需改代码。
 
-### 14.4 仍待实施（第三版）
+## 15. 实施进度（第三版：采集工具失败跳过源）
 
-- **采集工具失败跳过源**（中断点 #5/#28）：`AgentLoopStuckError` 仍直接阻断。需要工具层返回可区分的「源采集失败」标记并跳过 stuck 计数，风险较高（可能放行伪造源），建议单独评估。
+> 测试结果：`pytest tests/` 全量 **459 passed**。
+
+### 15.1 已完成的改动
+
+| 范围 | 改动 | 涉及文件 |
+|---|---|---|
+| `SKIP_SOURCE` 标记 | 采集工具源级失败返回 `SKIP_SOURCE:` 前缀（可区分「换下一个源」vs「参数/配置错误停下」） | `web_fetch.py`、`web_search.py`、`project_sources.py` |
+| 源级 vs 配置错误区分 | `WebFetch`/`CaptureProjectWebSource` 的 HTTP 状态错误（403/404 等）是源级失败 → `SKIP_SOURCE`；`WebSearch` 的 provider 401/403 是配置错误 → 保留 `Error:` | `web_search.py`（`httpx.HTTPStatusError` vs `httpx.RequestError` 区分） |
+| 跳过 stuck 计数 | `_ToolErrorTracker` 对采集类工具（`WebSearch`/`WebFetch`/`CaptureProjectWebSource`）的 `SKIP_SOURCE` 不触发普通 stuck；同一目标（URL）重复跳过超过阈值仍触发 stuck 防空转 | `agent_loop/loop.py` |
+| 提示词引导 | `collector_round.md` 明确「跳过 ≠ 完成」：`SKIP_SOURCE` 后换下一个候选源，同一 URL 不再重试 | `agents/prompts/collector_round.md` |
+
+### 15.2 新增测试
+
+- `tests/test_agent_loop.py`：4 条测试锁定第三阶段行为（跳过不 stuck、同 URL 重复跳过仍 stuck、普通工具错误仍 stuck、`_skip_target` 提取）。
+
+### 15.3 安全边界（本次刻意未放宽）
+
+- `Read`/`Write`/`RecordProjectEvidence` 等确定性工具**保持严格 stuck**，失败仍是 `Error executing tool` 并计数。
+- 「跳过源」不写入本轮事实，且 `CaptureProjectWebSource` 只有返回真实 `source_id` 才算采集进展——不放行伪造源。
+- 同一 URL 重复跳过超过 `max(threshold, 3)` 次仍抛 `AgentLoopStuckError`，防止模型在一个坏源上无限空转。

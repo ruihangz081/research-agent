@@ -112,9 +112,14 @@ async def web_search(query: str, num_results: int = 5) -> str:
             results = await _search_tavily(query, num_results)
         else:
             return await _search_duckduckgo_with_fallback(query, num_results)
-    except httpx.HTTPError as exc:
+    except httpx.HTTPStatusError as exc:
+        # 状态码错误（401/403/5xx）是配置/服务问题，不是源级失败，保留 Error 让模型停下修正
         logger.warning("%s search failed: %s", provider, exc)
         return f"Error: {provider} search request failed: {exc}"
+    except httpx.RequestError as exc:
+        # 网络层失败（连接中断/超时）是源级失败，跳过该 provider
+        logger.warning("%s search failed: %s", provider, exc)
+        return f"SKIP_SOURCE: {provider} search request failed: {exc}"
     except Exception as exc:  # provider 返回体异常
         logger.warning("%s search failed: %s", provider, exc)
         return f"Error: {provider} search failed: {exc}"
@@ -245,9 +250,9 @@ async def _search_duckduckgo_with_fallback(query: str, num_results: int) -> str:
         logger.warning("DuckDuckGo HTML search failed: %s", exc)
 
     return (
-        "Error: AnySearch and DuckDuckGo are unavailable. Install 'ddgs' "
-        "(pip install ddgs), or configure SEARCH_API_PROVIDER=serpapi|tavily "
-        "with SEARCH_API_KEY."
+        "SKIP_SOURCE: AnySearch 与 DuckDuckGo 均不可用，本轮搜索无结果。"
+        "Install 'ddgs' (pip install ddgs), or configure "
+        "SEARCH_API_PROVIDER=serpapi|tavily with SEARCH_API_KEY."
     )
 
 

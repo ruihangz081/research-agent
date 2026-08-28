@@ -347,3 +347,43 @@ async def test_stream_call_captures_usage_from_final_chunk() -> None:
 
     assert response.usage == {"prompt_tokens": 900, "completion_tokens": 120}
     assert response.content == "部分文本"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 第三阶段：采集工具源级失败跳过 stuck
+# ═══════════════════════════════════════════════════════════════
+
+
+def test_skip_source_does_not_trigger_stuck() -> None:
+    """采集工具返回 SKIP_SOURCE 时，不触发 stuck（换源继续）。"""
+    tracker = _ToolErrorTracker(threshold=3)
+    # 三个不同源都失败，但都不应触发 stuck
+    tracker.record("WebFetch", "SKIP_SOURCE: https://a.com 返回 HTTP 403，跳过该源")
+    tracker.record("WebFetch", "SKIP_SOURCE: https://b.com 返回 HTTP 404，跳过该源")
+    tracker.record("WebFetch", "SKIP_SOURCE: https://c.com 请求失败，跳过该源")
+
+
+def test_skip_same_source_repeatedly_still_stucks() -> None:
+    """同一 URL 重复跳过超过阈值仍触发 stuck，防止无限空转。"""
+    tracker = _ToolErrorTracker(threshold=3)
+    with pytest.raises(AgentLoopStuckError, match="skipped the same source"):
+        tracker.record("WebFetch", "SKIP_SOURCE: https://a.com 返回 HTTP 403，跳过该源")
+        tracker.record("WebFetch", "SKIP_SOURCE: https://a.com 返回 HTTP 403，跳过该源")
+        tracker.record("WebFetch", "SKIP_SOURCE: https://a.com 返回 HTTP 403，跳过该源")
+
+
+def test_normal_tool_error_still_triggers_stuck() -> None:
+    """非采集工具（或采集工具的普通 Error）仍严格 stuck。"""
+    tracker = _ToolErrorTracker(threshold=2)
+    with pytest.raises(AgentLoopStuckError, match="same error"):
+        tracker.record("Read", "Error executing tool 'Read': not found")
+        tracker.record("Read", "Error executing tool 'Read': not found")
+
+
+def test_skip_target_extraction() -> None:
+    """SKIP_SOURCE 里提取目标 URL，用于限制重复跳过。"""
+    from research_agent.agent_loop.loop import _skip_target
+
+    assert _skip_target("SKIP_SOURCE: https://a.com 返回 HTTP 403") == "https://a.com"
+    assert _skip_target("SKIP_SOURCE: 无目标") == "无目标"
+    assert _skip_target("Error: something") is None

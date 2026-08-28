@@ -31,6 +31,22 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════
 
 
+# 采集类工具：源级失败（SKIP_SOURCE）不应触发 stuck，让 Agent 换下一个源。
+# 其它工具（Read/Write/RecordProjectEvidence 等）保持严格 stuck 保护。
+_SKIPPABLE_COLLECTION_TOOLS = ("WebSearch", "WebFetch", "CaptureProjectWebSource")
+_SKIP_SOURCE_MARKER = "SKIP_SOURCE:"
+
+
+def _skip_target(result: str) -> str | None:
+    """从 SKIP_SOURCE 结果里提取被跳过的目标（URL），用于限制同一目标的重复跳过。"""
+    if not result.startswith(_SKIP_SOURCE_MARKER):
+        return None
+    payload = result[len(_SKIP_SOURCE_MARKER):].strip()
+    # 目标通常是 "http(s)://host..." 开头，截取第一个空白字符之前的部分
+    target = payload.split()[0] if payload else ""
+    return target or None
+
+
 class _ToolErrorTracker:
     """跟踪同一工具重复返回相同错误的次数。
 
@@ -42,9 +58,25 @@ class _ToolErrorTracker:
     def __init__(self, threshold: int) -> None:
         self.threshold = threshold
         self._counts: dict[tuple[str, str, str], int] = {}
+        # 采集类工具：同一目标（URL）被跳过的次数，超过阈值才计 stuck。
+        self._skip_counts: dict[tuple[str, str], int] = {}
 
     def record(self, tool_name: str, result: str, arguments: str = "") -> None:
         """登记一次工具结果；相同参数的同一错误达到阈值时停止。"""
+        # 采集类工具的源级失败：跳过 stuck 计数，但同一目标重复跳过仍受限。
+        if tool_name in _SKIPPABLE_COLLECTION_TOOLS and result.startswith(_SKIP_SOURCE_MARKER):
+            target = _skip_target(result) or "<no-target>"
+            key = (tool_name, target)
+            self._skip_counts[key] = self._skip_counts.get(key, 0) + 1
+            if self._skip_counts[key] >= max(self.threshold, 3):
+                raise AgentLoopStuckError(
+                    f"tool {tool_name!r} skipped the same source {target!r} "
+                    f"{self._skip_counts[key]} times; agent execution stopped. "
+                    f"Last skip: {result}"
+                )
+            # 跳过不进入普通 stuck 计数，让模型继续处理下一个源。
+            return
+
         if not result.startswith("Error executing tool '"):
             # 该工具本轮成功，清掉它此前累积的错误计数
             self._counts = {

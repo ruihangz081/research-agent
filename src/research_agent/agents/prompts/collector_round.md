@@ -119,6 +119,8 @@ system prompt 可能注入「结构化补研任务」表（来自 `03_tasks.json
 - **必须 Write 到指定路径 `{round_output_path}`**
 - 上传材料是可选补充；没有上传材料时，必须通过 `CaptureProjectWebSource` 自动建立公开网页证据库
 - 未成功捕获为项目来源的网页事实不得保留，也不得把草案源编号伪装成项目 `source_id`
+- **跳过 ≠ 完成**：`WebFetch` / `CaptureProjectWebSource` / `WebSearch` 返回 `SKIP_SOURCE:` 时，表示该源不可用，你应改用搜索结果里的下一个候选源继续采集；绝不能把「跳过」当作「已获取数据」，也不能把跳过的事实写入本轮输出
+- 同一个 URL 返回 `SKIP_SOURCE:` 后，**不要再次调用同一 URL**，直接换下一个候选源
 - 每项任务必须使用台账中的原 `task_id`；Agent2 不得宣布任务 `completed` 或 `waived`
 - 回填状态只能是 `sourced` 或 `blocked`；前者必须提供真实项目 `source_id`，后者必须填写 `blocked_reason`
 - 回填 JSON 每个 result 对象**只允许** `task_id`、`status`、`source_ids`、`blocked_reason` 四个字段；`question_id` 属于任务台账（`03_tasks.json`）而非回填，**严禁**写入回填 JSON，否则会因 `extra_forbidden` 校验失败
