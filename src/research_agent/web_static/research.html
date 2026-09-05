@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>研究首页 · 溯光 Lumitrace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260825-availability-v2" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260905-reader-v3" />
     <link rel="stylesheet" href="/static/design-tokens.css?v=20260825-availability-v2" />
   </head>
   <body>
@@ -47,9 +47,9 @@
             <div id="projectTable" class="table-scroll"></div>
           </section>
 
-          <section class="panel usage-panel" aria-labelledby="usageTitle">
-            <div class="panel-header">
-              <h2 id="usageTitle">Token 用量</h2>
+          <details class="panel usage-panel" aria-labelledby="usageTitle">
+            <summary class="panel-header"><h2 id="usageTitle">用量与运行统计</h2><span class="muted">按需查看</span></summary>
+            <div class="panel-body">
               <div id="usageRangeTabs" class="filter-tabs" aria-label="用量视图切换">
                 <button class="filter-tab active" data-range="daily">每日</button>
                 <button class="filter-tab" data-range="weekly">每周</button>
@@ -79,7 +79,7 @@
                 </div>
               </div>
             </div>
-          </section>
+          </details>
         </div>
       </main>
     </div>
@@ -93,7 +93,7 @@
         <form id="createForm" class="drawer-form">
           <label><span>调研主题 *</span><input id="topicInput" maxlength="100" required placeholder="例如：生成式 AI 在教育行业的应用研究" /></label>
           <label><span>补充要求</span><textarea id="briefInput" maxlength="500" placeholder="补充说明调研背景、关注重点、期望结论（选填）"></textarea></label>
-          <label><span>采集验证轮数 *</span><input id="roundInput" type="hidden" value="3" /><div id="roundPicker" class="round-picker"></div><small class="muted">轮数越多，验证越充分，报告越可靠。</small></label>
+          <label><span>采集验证轮数 *</span><input id="roundInput" type="hidden" value="3" /><div id="roundPicker" class="round-picker"></div><small class="muted">设置补充采集的轮数上限。轮数越多可能耗时越长；证据达标后会提前结束。</small></label>
           <div class="drawer-actions"><button id="cancelCreate" class="button secondary" type="button">取消</button><button id="submitCreate" class="button primary" type="submit">创建研究</button></div>
         </form>
       </aside>

@@ -296,17 +296,19 @@ def test_workspace_plan_migration_panel_requires_explicit_flag() -> None:
     assert "plan.migration_required === true" in source
 
 
-def test_workspace_places_progress_then_evaluation_before_run_panels() -> None:
+def test_workspace_keeps_primary_actions_outside_mobile_hidden_header() -> None:
+    from bs4 import BeautifulSoup
+
     source = (web_app.STATIC_DIR / "workspace.html").read_text(encoding="utf-8")
-
-    plan_position = source.index('id="planPanel"')
-    pipeline_position = source.index('id="pipeline"')
-    timeline_position = source.index("Agent 执行时间线")
-    artifacts_position = source.index("<h2>项目产物</h2>")
-
-    assert pipeline_position < plan_position < timeline_position < artifacts_position
-    assert 'id="workspaceContent" class="workspace-shell hidden"' in source
-    assert '<details id="rerunPanel"' in source
+    page = BeautifulSoup(source, "html.parser")
+    for control in ("continueBtn", "retryBtn", "readReportBtn", "reviewActionBtn"):
+        assert page.select_one(f"#researchOverview #{control}") is not None
+        assert page.select_one(f".topbar-meta #{control}") is None
+    assert source.index('id="clarifyPanel"') < source.index('id="pipeline"')
+    assert page.select_one("details#planPanel") is not None
+    assert page.select_one("details#rerunPanel") is not None
+    assert page.select_one("#rerunPanel #deleteBtn") is None
+    assert page.select_one("#deleteBtn") is not None
 
 
 def test_workspace_long_timeline_content_does_not_collapse_column_gap() -> None:

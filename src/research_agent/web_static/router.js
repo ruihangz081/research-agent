@@ -11,6 +11,7 @@
   let currentDef = null;    // 当前视图模块 { init, destroy }
   let currentQuery = "";    // 当前视图挂载时的查询串（?project= 等）
   let loading = false;
+  let pendingNavigation = null;
   let currentController = null; // 视图片段请求的 AbortController
   const fragmentCache = new Map(); // 视图名 -> { html, title }（片段是静态的，缓存后切换零 fetch）
 
@@ -59,7 +60,12 @@
   }
 
   async function mountView(viewName, { pushState = true } = {}) {
-    if (loading) return;
+    if (loading) {
+      pendingNavigation = { viewName, pushState };
+      currentController?.abort();
+      return;
+    }
+    const requestedQuery = window.location.search;
     // 同视图但查询串变化（如 ?project=A → ?project=B，含前进/后退）时
     // 必须重新挂载，否则 URL 已变、内容仍是旧项目
     if (currentView === viewName && currentQuery === window.location.search) return;
@@ -67,14 +73,14 @@
 
     // 命中缓存时无 fetch 空窗，直接换内容，不显示骨架屏（避免闪烁）
     const cached = fragmentCache.get(viewName);
-    if (!cached) renderSkeleton();
-
     destroyCurrent();
+    if (!cached) renderSkeleton();
 
     currentController = new AbortController();
     try {
       const data = cached || await Lumitrace.api(`/api/views/${viewName}`, { signal: currentController.signal });
       if (!cached) fragmentCache.set(viewName, data);
+      if (pendingNavigation) { currentView = null; return; }
       const mount = $("viewMount");
       if (!mount) return;
       document.title = `${data.title} · 溯光 Lumitrace`;
@@ -86,7 +92,7 @@
       updateSidebarActive(viewName);
       const previousView = currentView;
       currentView = viewName;
-      currentQuery = window.location.search;
+      currentQuery = requestedQuery;
       currentDef = Lumitrace.views.get(viewName);
 
       // 两阶段过渡：旧内容先淡出 → 同步换新内容 → 新内容淡入。
@@ -100,6 +106,8 @@
         mount.classList.add("view-leave");
         await new Promise((resolve) => window.setTimeout(resolve, LEAVE_MS));
       }
+
+      if (pendingNavigation) { currentView = null; return; }
 
       // 阶段 2：同步注入新内容，并标记已渲染
       mount.classList.remove("view-leave");
@@ -116,6 +124,8 @@
         try { await currentDef.init(mount); } catch (error) { console.error("[router] init 失败", error); }
       }
     } catch (error) {
+      if (pendingNavigation) { currentView = null; return; }
+      currentView = null;
       if (error?.message === "请求已取消") return;
       const mount = $("viewMount");
       if (mount) {
@@ -125,6 +135,11 @@
     } finally {
       loading = false;
       currentController = null;
+      if (pendingNavigation) {
+        const next = pendingNavigation;
+        pendingNavigation = null;
+        await mountView(next.viewName, { pushState: next.pushState });
+      }
     }
   }
 

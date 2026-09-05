@@ -24,6 +24,7 @@ function filteredArtifacts() {
 function renderList() {
   const artifacts = filteredArtifacts();
   if (!artifacts.length) {
+    state.selectedKey = null;
     $("resultList").innerHTML = '<div class="empty compact"><span class="empty-symbol">◇</span><strong>暂无该类型成果</strong></div>';
     return;
   }
@@ -63,13 +64,13 @@ function updateDelivery() {
             ? { pill: "warning", dot: "warning", label: "等待确认" }
             : { pill: "", dot: "neutral", label: "已暂停" };
   $("generationStatus").innerHTML = `<span class="status-pill ${status.pill}"><i class="status-dot ${status.dot}"></i>${status.label}</span>`;
-  const progress = project ? project.collect_round / Math.max(1, project.max_collect_rounds) : 0;
-  $("generationMeter").style.width = project?.stage === "done" ? "100%" : `${Math.max(8, progress * 70)}%`;
+  $("deliverySummary").textContent = exists("final_report") ? "报告正文已可阅读。" : "各阶段内容会随研究推进逐步生成。";
+  $("backToWorkspace").href = `/app/workspace?project=${encodeURIComponent(state.projectId)}`;
   renderDegradation();
   const warning = $("deliveryWarning");
-  const showWarning = exists("final_report") && !exists("final_report_tex");
+  const showWarning = Boolean(project?.delivery_degradation?.length);
   warning.classList.toggle("hidden", !showWarning);
-  if (showWarning) warning.textContent = "正式排版尚未生成，可点击“生成 / 刷新正式版”。";
+  if (showWarning) warning.textContent = "部分交付格式有限制，请查看交付说明；也可在高级导出中重新排版。";
 }
 
 // 降级详情：done_degraded / claims 降级 / 暂停原因都在这里展开展示
@@ -89,9 +90,38 @@ function renderDegradation() {
   if (hasReasons) box.innerHTML = reasons.map((r) => `<div class="degradation-row">${Lumitrace.escapeHtml(r)}</div>`).join("");
 }
 
+function renderToc() {
+  const headings = Array.from($("documentPreview").querySelectorAll("h1, h2, h3"));
+  $("reportToc").innerHTML = headings.length ? '<p class="eyebrow">本页目录</p>' : '<p class="muted">此内容暂无章节目录</p>';
+  headings.forEach((heading, index) => {
+    if (!heading.id) heading.id = `report-section-${index}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `toc-item toc-${heading.tagName.toLowerCase()}`;
+    button.textContent = heading.textContent;
+    button.addEventListener("click", () => {
+      heading.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: true });
+      $("reportToc").querySelectorAll("button").forEach((item) => item.removeAttribute("aria-current"));
+      button.setAttribute("aria-current", "location");
+    });
+    $("reportToc").appendChild(button);
+  });
+}
+
+let previewRequest = 0;
 async function loadPreview() {
+  const request = ++previewRequest;
+  const projectId = state.projectId;
+  $("reportToc").innerHTML = "";
   const artifact = state.artifacts.find((item) => item.key === state.selectedKey);
-  if (!artifact) return;
+  if (!artifact) {
+    $("previewTitle").textContent = "暂无成果";
+    $("previewMeta").textContent = "请切换类型";
+    $("documentPreview").innerHTML = '<div class="empty">当前类型暂无研究成果</div>';
+    return;
+  }
   $("previewTitle").textContent = artifact.label;
   $("previewMeta").textContent = artifact.exists ? "已生成" : "等待生成";
   $("previewScroller").scrollTop = 0;
@@ -105,20 +135,28 @@ async function loadPreview() {
     const isJsonArtifact = ["research_requirements", "research_tasks", "chart_manifest"].includes(artifact.key)
       || artifact.key.startsWith("feedback_round_")
       || artifact.key.startsWith("task_results_round_");
-    $("documentPreview").innerHTML = data.html || (isJsonArtifact
+    const markup = data.html || (isJsonArtifact
       ? Lumitrace.renderArtifact(artifact.key, data.content)
       : await Lumitrace.renderMarkdownAsync(data.content));
+    if (request !== previewRequest || projectId !== state.projectId) return;
+    $("documentPreview").innerHTML = markup;
     Lumitrace.hydrateSourceCitations($("documentPreview"), state.projectId);
+    renderToc();
   } catch (error) {
+    if (request !== previewRequest || projectId !== state.projectId) return;
     $("documentPreview").innerHTML = `<div class="empty"><span class="empty-symbol">!</span><strong>预览失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p></div>`;
   }
 }
 
+let projectRequest = 0;
 async function loadProject() {
+  const request = ++projectRequest;
   if (!state.projectId) return showEmpty();
   try {
     const previous = state.artifacts.find((item) => item.key === state.selectedKey);
-    state.project = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}`);
+    const project = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}`);
+    if (request !== projectRequest) return;
+    state.project = project;
     state.artifacts = state.project.artifacts;
     // 保留用户当前选择；仅在选择失效（或首次进入）时回退到优先成果
     if (!state.artifacts.some((item) => item.key === state.selectedKey)) {
@@ -132,6 +170,7 @@ async function loadProject() {
     const current = state.artifacts.find((item) => item.key === state.selectedKey);
     if (!previous || previous.key !== current?.key || previous.exists !== current?.exists || previous.version !== current?.version) await loadPreview();
   } catch (error) {
+    if (request !== projectRequest) return;
     disconnectEvents();
     $("resultsEmpty").innerHTML = `<span class="empty-symbol">!</span><strong>成果加载失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p>`;
     showEmpty();
@@ -211,6 +250,7 @@ function bindEvents() {
 }
 
 async function init() {
+  state.projectId = new URLSearchParams(window.location.search).get("project") || Lumitrace.selectedProject();
   decorateIcons();
   bindEvents();
   await initialize();
@@ -218,6 +258,8 @@ async function init() {
 }
 
 function destroy() {
+  previewRequest++;
+  projectRequest++;
   disconnectEvents();
   state.project = null;
   state.artifacts = [];

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>成果中心 · 溯光 Lumitrace</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260825-availability-v2" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260905-reader-v3" />
     <link rel="stylesheet" href="/static/design-tokens.css?v=20260825-availability-v2" />
   </head>
   <body>
@@ -15,32 +15,36 @@
           <div class="topbar-left"><h1>成果中心</h1></div>
           <div class="topbar-actions"><a class="button primary" href="/app/research?new=1">✦ 开始调研</a></div>
         </header>
-        <div class="page-content">
+        <div class="page-content reader-page">
           <section class="page-heading">
-            <div><h1>成果中心</h1><p>查看、预览并导出项目产生的所有研究成果。</p></div>
+            <div><h1>成果中心</h1><p>从结论出发，阅读报告，追溯每一条研究依据。</p></div>
             <div class="toolbar"><select id="projectSelect" aria-label="项目筛选"></select><select id="typeFilter" aria-label="成果类型"><option value="">全部类型</option><option value="report">报告与分析</option><option value="source">信息源</option><option value="round">轮次数据</option><option value="delivery">交付文件</option></select></div>
           </section>
 
           <div id="resultsEmpty" class="panel empty hidden"><span class="empty-symbol">◇</span><strong>暂无可查看的成果</strong><p>研究开始运行后，各阶段成果会自动出现在这里。</p><a class="button primary" href="/app/research?new=1">新建调研</a></div>
           <div id="resultsContent" class="results-layout hidden">
-            <div class="panel" style="overflow:hidden">
-              <div class="panel-header"><h2 id="previewTitle">成果预览</h2><span id="previewMeta" class="status-pill">等待选择</span></div>
+            <div class="panel reader-panel">
+              <div class="panel-header"><h2 id="previewTitle">成果预览</h2><div class="reader-header-actions"><span id="previewMeta" class="status-pill">等待选择</span><button id="downloadPdf" class="button primary small" type="button"><i id="pdfIcon"></i>下载 PDF</button></div></div>
               <div class="results-preview-layout">
-                <nav id="resultList" class="results-list" aria-label="成果列表"></nav>
+                <aside class="reader-navigation">
+                  <details class="reader-artifacts"><summary>切换研究成果</summary><nav id="resultList" class="results-list" aria-label="成果列表"></nav></details>
+                  <nav id="reportToc" class="report-toc" aria-label="报告目录"></nav>
+                </aside>
                 <div id="previewScroller" class="document-preview-scroller"><article id="documentPreview" class="document-sheet"></article></div>
               </div>
             </div>
 
-            <aside class="workspace-stack">
+            <aside class="workspace-stack reader-delivery">
               <section class="panel delivery-card">
                 <div><p class="eyebrow">生成状态</p><h3 id="generationStatus">—</h3></div>
-                <div class="meter" style="height:5px;border-radius:999px;background:#edf0f8;overflow:hidden"><div id="generationMeter" style="height:100%;background:var(--gradient);width:0"></div></div>
+                <p id="deliverySummary" class="muted"></p><a id="backToWorkspace" class="button secondary small" href="/app/workspace">查看研究进度 →</a>
               </section>
               <section class="panel delivery-card">
                 <div><p class="eyebrow">导出与下载</p><h3>交付文件</h3></div>
-                <button id="downloadPdf" class="download-row" type="button"><span><strong>正式 PDF 下载</strong><small>统一券商研报排版</small></span><i id="pdfIcon"></i></button>
-                <button id="typeset" class="download-row" type="button"><span><strong>生成 / 刷新正式版</strong><small>生成图表、HTML、TeX 与 PDF</small></span><i id="typesetIcon"></i></button>
+                <details class="reader-export-options"><summary>高级导出</summary>
+                <button id="typeset" class="download-row" type="button"><span><strong>生成 / 刷新正式版</strong><small>重新生成可用的排版文件</small></span><i id="typesetIcon"></i></button>
                 <button id="downloadTex" class="download-row" type="button"><span><strong>TeX 下载</strong><small>下载 .tex 源文件</small></span><i id="texIcon"></i></button>
+                </details>
               </section>
               <section id="degradationBox" class="warning-box hidden"></section>
               <section id="deliveryWarning" class="warning-box hidden"></section>
@@ -50,6 +54,6 @@
       </main>
     </div>
     <script src="/static/ui.js?v=20260825-availability-v2"></script>
-    <script src="/static/results.js?v=20260825-availability-v2"></script>
+    <script src="/static/results.js?v=20260905-reader-v3"></script>
   </body>
 </html>

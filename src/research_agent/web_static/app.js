@@ -19,7 +19,7 @@ function currentStep(stage) {
 }
 
 function renderPipeline(project) {
-  const active = project ? currentStep(project.stage) : -1;
+  const active = project ? (project.stage === "done" ? pipelineStages.length : currentStep(project.stage)) : -1;
   $("pipeline").innerHTML = pipelineStages.map(([label], index) => {
     const status = index < active ? "complete" : index === active ? "current" : "";
     const caption = index < active ? "已完成" : index === active ? (project.running ? "进行中" : project.checkpoint ? "待审批" : "当前阶段") : "待开始";
@@ -43,7 +43,10 @@ function renderClarification(project) {
   const questions = project.clarification_questions || [];
   const pending = project.stage === "await_clarification" && questions.length > 0;
   panel.classList.toggle("hidden", !pending);
-  if (!pending) return;
+  if (!pending) { panel.dataset.questions = ""; return; }
+  const signature = JSON.stringify(questions);
+  if (panel.dataset.questions === signature) return;
+  panel.dataset.questions = signature;
   $("clarifyQuestions").innerHTML = questions.map((question, index) => `
     <label class="clarify-item">
       <span>${index + 1}. ${Lumitrace.escapeHtml(question)}</span>
@@ -158,7 +161,7 @@ function renderResearchPlan(project) {
 function renderArtifacts(project) {
   const artifacts = previewableArtifacts(project);
   if (!state.artifactKey || !artifacts.some((item) => item.key === state.artifactKey)) {
-    state.artifactKey = project.checkpoint?.key || artifacts.find((item) => item.exists)?.key || artifacts[0]?.key || null;
+    state.artifactKey = project.checkpoint?.key || artifacts.find((item) => item.key === "final_report" && item.exists)?.key || artifacts.find((item) => item.exists)?.key || artifacts[0]?.key || null;
   }
   $("artifactTabs").innerHTML = artifacts.map((artifact) => `<button class="artifact-tab${artifact.key === state.artifactKey ? " active" : ""}${artifact.exists ? "" : " missing"}" type="button" data-artifact="${artifact.key}">${Lumitrace.icon("file", 15)}<span>${Lumitrace.escapeHtml(artifact.label)}</span></button>`).join("");
   // 事件委托：只在容器上绑一次，tab 重绘后无需逐个绑定
@@ -218,6 +221,7 @@ async function loadArtifact(forceTop = false) {
     const markup = artifact.html || (isJsonArtifact
       ? Lumitrace.renderArtifact(artifactKey, artifact.content)
       : await Lumitrace.renderMarkdownAsync(artifact.content));
+    if (state.artifactKey !== artifactKey || !view.isConnected) return;
     if (state.renderedArtifactKey !== artifactKey || state.renderedArtifactMarkup !== markup) {
       view.innerHTML = markup;
       Lumitrace.hydrateSourceCitations(view, state.projectId);
@@ -227,8 +231,32 @@ async function loadArtifact(forceTop = false) {
     }
     if (forceTop || artifactChanged) view.scrollTop = 0;
   } catch (error) {
+    if (state.artifactKey !== artifactKey || !view.isConnected) return;
     view.innerHTML = `<div class="empty"><span class="empty-symbol">!</span><strong>内容读取失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p></div>`;
   }
+}
+
+function renderOverview(project) {
+  $("researchOverview").classList.remove("hidden");
+  const hasReport = project.artifacts.some((item) => item.key === "final_report" && item.exists);
+  const migration = project.research_plan?.migration_required;
+  const target = migration ? "planMigratePanel" : project.failed ? "failurePanel" : project.stage === "await_clarification" ? "clarifyPanel" : project.checkpoint ? "checkpointPanel" : null;
+  const waiting = !project.running && target;
+  $("overviewTitle").textContent = project.running ? "研究正在推进" : migration ? "需要确认研究范围" : project.failed ? "研究需要处理" : project.stage === "done" ? "你的研究报告已就绪" : waiting ? "下一步，需要你的确认" : "研究已暂停";
+  $("overviewDescription").textContent = project.running ? `${Lumitrace.stageLabel(project.stage)} · 完成后将在这里更新研究内容。` : project.stage === "done" ? (project.delivery_status === "done_degraded" ? "正文已交付，部分图表或导出格式有限制，可在报告页查看详情。" : "阅读完整报告，查看研究依据，或下载 PDF。") : project.paused ? (project.pause_reason || "继续运行前，请确认暂停原因已解决。") : waiting ? "查看下方待办，完成后即可继续推进研究。" : "已有研究内容会保留，你可以从当前阶段继续。";
+  const requirements = project.research_plan?.requirements || [];
+  const coverage = project.research_plan?.coverage || {};
+  const met = requirements.filter((item) => (coverage[item.question_id] || 0) >= 1).length;
+  $("coverageSummary").textContent = requirements.length ? `${met} / ${requirements.length} 个研究问题证据达标` : "研究范围将在提纲确认后展示";
+  $("readReportBtn").classList.toggle("hidden", !hasReport);
+  $("readReportBtn").href = `/app/results?project=${encodeURIComponent(project.id)}`;
+  $("readReportBtn").classList.toggle("primary", project.stage === "done");
+  $("readReportBtn").classList.toggle("secondary", project.stage !== "done");
+  $("reviewActionBtn").classList.toggle("hidden", !waiting || (project.can_retry && !migration));
+  $("reviewActionBtn").dataset.target = target || "";
+  $("reviewActionBtn").textContent = project.stage === "await_clarification" ? "回答研究问题 ↓" : "查看待办 ↓";
+  $("continueBtn").classList.toggle("hidden", project.running || project.stage === "done" || Boolean(waiting));
+  $("retryBtn").classList.toggle("hidden", !project.can_retry || project.running);
 }
 
 function renderProject(project) {
@@ -254,9 +282,12 @@ function renderProject(project) {
   renderRerun(project);
   renderArtifacts(project);
   updateDownloads(project);
+  renderOverview(project);
 }
 
+let projectRequest = 0;
 async function loadProject() {
+  const request = ++projectRequest;
   if (state.busy) return;
   if (!state.projectId) {
     try {
@@ -267,9 +298,11 @@ async function loadProject() {
   if (!state.projectId) { renderPipeline(null); return; }
   try {
     const project = await Lumitrace.api(`/api/projects/${encodeURIComponent(state.projectId)}`);
+    if (request !== projectRequest) return;
     renderProject(project);
     await loadArtifact();
   } catch (error) {
+    if (request !== projectRequest) return;
     $("workspaceEmpty").innerHTML = `<span class="empty-symbol">!</span><strong>项目加载失败</strong><p>${Lumitrace.escapeHtml(error.message)}</p><a class="button secondary" href="/app/research">返回研究首页</a>`;
     $("workspaceEmpty").classList.remove("hidden");
     $("workspaceContent").classList.add("hidden");
@@ -470,6 +503,11 @@ async function submitClarification(skip) {
 }
 
 function bindEvents() {
+  $("reviewActionBtn").addEventListener("click", () => {
+    const panel = $($("reviewActionBtn").dataset.target);
+    panel?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+    panel?.querySelector("textarea, button")?.focus({ preventScroll: true });
+  });
   $("continueBtn").addEventListener("click", continueProject);
   $("clarifySubmitBtn").addEventListener("click", () => submitClarification(false));
   $("clarifySkipBtn").addEventListener("click", () => submitClarification(true));
@@ -478,7 +516,6 @@ function bindEvents() {
   $("rerunStage").addEventListener("change", updateRerunHint);
   $("rerunBtn").addEventListener("click", rerunProject);
   $("deleteBtn").addEventListener("click", () => deleteProject($("deleteBtn")));
-  $("failureDeleteBtn").addEventListener("click", () => deleteProject($("failureDeleteBtn")));
   $("planMigrateBtn").addEventListener("click", () => migrateResearchPlan($("planMigrateBtn")));
   $("approveBtn").addEventListener("click", () => approve(true));
   $("rejectBtn").addEventListener("click", () => approve(false));
@@ -497,6 +534,7 @@ async function init() {
 }
 
 function destroy() {
+  projectRequest++;
   disconnectEvents();
   state.project = null;
   state.artifactKey = null;
